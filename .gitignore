@@ -1,0 +1,32 @@
+# 浏览数据
+chrome_profiles/
+*.pkl
+
+# 回复记录
+replied_records/*.json
+
+# 日志
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.spec
+build/
+dist/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 坐标文件（包含用户数据，不提交）
+comment_data/*/positions.json
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
