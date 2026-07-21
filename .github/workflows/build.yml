@@ -1,8 +1,8 @@
-name: Build Windows
+name: Build Windows Package
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   workflow_dispatch:
 
 jobs:
@@ -11,23 +11,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install pyinstaller selenium PyQt5 pyperclip
-
-      - name: Download chromedriver
+      - name: Extract version from commit
+        shell: bash
         run: |
-          curl -L -o chromedriver-win64.zip "https://storage.googleapis.com/chrome-for-testing-public/last-known-good-version/chromedriver-win64.zip"
-          powershell Expand-Archive -Path chromedriver-win64.zip -DestinationPath . -Force
-          xcopy "chromedriver-win64-*\chromedriver.exe" "chromedriver.exe*" /Y
-          echo chromedriver downloaded
+          VER=$(git log -1 --pretty=%s | grep -oP '^v[\d.]+' || echo "v1.0.0")
+          echo "VERSION=$VER" >> $GITHUB_ENV
 
-      - name: Create placeholder dirs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip
+
+      - name: Create data dirs
         run: |
           mkdir replied_records 2>nul
           mkdir chrome_profiles 2>nul
@@ -36,65 +33,45 @@ jobs:
           echo. > chrome_profiles\.gitkeep
           echo. > comment_data\.gitkeep
 
-      - name: Build with PyInstaller
+      - name: Get chromedriver
+        run: python -c "from webdriver_manager.chrome import ChromeDriverManager; p = ChromeDriverManager().install(); import shutil; shutil.copy(p, 'chromedriver.exe')"
+
+      - name: Build
+        shell: pwsh
         run: |
-          pyinstaller --onedir --windowed --name="遵农商_抖音客服助手" `
+          $name = "遵农商_抖音客服助手_$env:VERSION"
+          pyinstaller --onedir --windowed --name $name `
             --add-data "config.json;." `
             --add-data "worker.py;." `
+            --add-data "chromedriver.exe;." `
             --add-data "replied_records;replied_records" `
             --add-data "chrome_profiles;chrome_profiles" `
             --add-data "comment_data;comment_data" `
-            --hidden-import PyQt5.QtCore `
-            --hidden-import PyQt5.QtGui `
-            --hidden-import PyQt5.QtWidgets `
-            --hidden-import selenium.webdriver.chrome.service `
-            --hidden-import selenium.webdriver.common.by `
-            --hidden-import selenium.webdriver.support.ui `
-            --hidden-import selenium.webdriver.support.expected_conditions `
-            --hidden-import selenium.common.exceptions `
-            --hidden-import pyperclip `
-            --noconfirm main.py
+            --collect-all PyQt5 `
+            --collect-all selenium `
+            main.py
 
-      - name: Copy chromedriver + assets
+      - name: Add readme
+        shell: pwsh
         run: |
-          xcopy "chromedriver.exe" "dist\遵农商_抖音客服助手\_internal\" /Y
-          echo 使用说明 > "dist\遵农商_抖音客服助手\使用说明.txt"
-          echo 遵农商·抖音客服助手 v1.0 >> "dist\遵农商_抖音客服助手\使用说明.txt"
-          echo. >> "dist\遵农商_抖音客服助手\使用说明.txt"
-          echo 双击 遵农商_抖音客服助手.exe 即可运行 >> "dist\遵农商_抖音客服助手\使用说明.txt"
-          echo 首次使用需扫码登录抖音创作者平台 >> "dist\遵农商_抖音客服助手\使用说明.txt"
+          $name = "遵农商_抖音客服助手_$env:VERSION"
+          @"
+          遵农商·抖音客服助手 $env:VERSION
 
-      - name: Create ZIP
-        run: powershell Compress-Archive -Path "dist\遵农商_抖音客服助手\*" -DestinationPath "遵农商_抖音客服助手_v1.0.0_Windows.zip"
+          双击 $name.exe 即可运行。
+          首次使用需扫码登录抖音创作者平台。
 
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v1
+          遵义农商银行 出品
+          "@ | Out-File -FilePath "dist\$name\使用说明.txt" -Encoding UTF8
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "遵农商_抖音客服助手_$env:VERSION"
+          Compress-Archive -Path "dist\$name\*" -DestinationPath "$name.zip"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.0.0-windows
-          name: 遵农商·抖音客服助手 v1.0 (Windows)
-          body: |
-            ## 遵农商·抖音客服助手 v1.0 (Windows 版)
-            
-            帮农信人自动回复抖音私信和评论的小助手。
-            
-            ### 使用方法
-            1. 下载 zip 解压
-            2. 双击 `遵农商_抖音客服助手.exe` 运行
-            3. 添加账号，设置回复话术
-            4. 点「全部启动」挂机运行
-            
-            ### 功能
-            - 多账号私信自动回复
-            - 多账号评论自动回复
-            - 每账号独立配置话术
-            - 暗色专业UI
-            
-            ### 要求
-            - Windows 10/11
-            - Google Chrome 浏览器（首次需手动扫码登录）
-            
-            遵义农商银行 出品
-          files: 遵农商_抖音客服助手_v1.0.0_Windows.zip
-          draft: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: "遵农商_抖音客服助手_${{ env.VERSION }}"
+          path: "*.zip"
