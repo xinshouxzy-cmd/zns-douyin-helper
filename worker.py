@@ -36,6 +36,7 @@ REST_PHASE = 10
 
 def find_chromedriver():
     for c in [
+        os.path.join(BASE_DIR, "runtime", "chromedriver.exe"),
         os.path.join(BASE_DIR, "chromedriver.exe"),
         os.path.join(BASE_DIR, "chromedriver"),
         "chromedriver", "chromedriver.exe",
@@ -43,6 +44,12 @@ def find_chromedriver():
         if os.path.exists(c) or c in ("chromedriver", "chromedriver.exe"):
             return c
     return "chromedriver"
+
+
+def get_bundled_chrome():
+    """返回内置 Chrome 路径（如果存在）"""
+    p = os.path.join(BASE_DIR, "runtime", "chrome", "chrome.exe")
+    return p if os.path.exists(p) else None
 
 
 def _rpath(name):
@@ -99,6 +106,10 @@ class AccountWorker(QThread):
     # ── 浏览器 ──
     def _start_browser(self):
         opt = Options()
+        # 优先使用内置 Chrome 便携版
+        bundled = get_bundled_chrome()
+        if bundled:
+            opt.binary_location = bundled
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -257,190 +268,37 @@ class AccountWorker(QThread):
         except Exception as e:
             self.L(f"⚠ 私信异常: {e}", "yellow")
 
-    # ═══════════ 评论回复（CDP 鼠标事件 = Playwright 同款底层） ═══════════
+    # ═══════════ 评论回复（Selenium ActionChains = 真实鼠标点击） ═══════════
 
-    def _mouse_move(self, x, y):
-        """CDP 移动鼠标到视口坐标 (x,y) — 和 Playwright 一样的底层协议"""
+    def _cmt_click_at(self, x, y, retries=3):
+        """用 ActionChains 模拟真实鼠标点击（视口绝对坐标）"""
         try:
-            self._d.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                'type': 'mouseMoved', 'x': int(x), 'y': int(y)
-            })
-            return True
+            body = self._d.find_element(By.TAG_NAME, "body")
+            cx, cy = self._d.execute_script("""
+                const r = document.body.getBoundingClientRect();
+                return [r.left + r.width/2, r.top + r.height/2];
+            """)
+            ox, oy = int(x - cx), int(y - cy)
+            for i in range(retries):
+                try:
+                    ActionChains(self._d, duration=0) \
+                        .move_to_element_with_offset(body, ox, oy) \
+                        .click().perform()
+                    return True
+                except:
+                    time.sleep(1)
+            return False
         except:
             return False
 
-    def _mouse_click(self, x, y):
-        """CDP 在视口坐标 (x,y) 处点击"""
+    def _cmt_js(self, code):
         try:
-            self._d.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                'type': 'mousePressed', 'x': int(x), 'y': int(y),
-                'button': 'left', 'clickCount': 1
-            })
-            time.sleep(0.05)
-            self._d.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                'type': 'mouseReleased', 'x': int(x), 'y': int(y),
-                'button': 'left', 'clickCount': 1
-            })
-            return True
+            return self._d.execute_script(code)
         except:
-            return False
-
-    def _cmt_find(self, js_code):
-        """执行 JS 查找，返回 dict（ok 表示是否找到）"""
-        try:
-            return self._d.execute_script(js_code) or {"ok": False}
-        except:
-            return {"ok": False}
-
-    def _cmt_hover_notification(self):
-        """CDP 悬停在 header 右侧通知图标上 → 浮窗出现"""
-        info = self._cmt_find("""
-            var icons = document.querySelectorAll('header [class*="icon"]');
-            var best = null, bx = -1;
-            for (var i = 0; i < icons.length; i++) {
-                var r = icons[i].getBoundingClientRect();
-                if (r.width >= 16 && r.width <= 70 && r.height >= 16 && r.height <= 70
-                    && r.x > window.innerWidth * 0.5 && r.x > bx && r.y < 100) {
-                    best = icons[i]; bx = r.x;
-                }
-            }
-            if (!best) {
-                var els = document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="bell"]');
-                for (var i = 0; i < els.length; i++) {
-                    var r = els[i].getBoundingClientRect();
-                    if (r.width > 0 && r.height > 0 && r.width < 80 && r.y < 100
-                        && r.x > window.innerWidth * 0.5) {
-                        best = els[i]; break;
-                    }
-                }
-            }
-            if (!best) return {ok: false};
-            var r = best.getBoundingClientRect();
-            return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2};
-        """)
-        if not info.get("ok"):
-            self.L("⚠ 未找到通知图标", "yellow")
-            return False
-        self.L(f"  悬停坐标: ({info['x']:.0f}, {info['y']:.0f})", "white")
-        self._mouse_move(info["x"], info["y"])
-        time.sleep(2.5)
-        return True
-
-    def _cmt_click_tab(self, tab_name):
-        """全页面搜索文字匹配的 tab 并 CDP 点击（不依赖 overlay 容器）"""
-        esc = tab_name.replace("\\", "\\\\").replace("'", "\\'")
-        info = self._cmt_find(f"""
-            var all = document.querySelectorAll('span,div,button,a,li');
-            var candidates = [];
-            for (var i = 0; i < all.length; i++) {{
-                var t = (all[i].textContent || '').trim();
-                if (t === '{esc}') {{
-                    var r = all[i].getBoundingClientRect();
-                    if (r.width > 20 && r.width < 250 && r.height > 10 && r.y > 40 && r.y < 200) {{
-                        candidates.push({{el: all[i], x: r.x + r.width/2, y: r.y + r.height/2, w: r.width}});
-                    }}
-                }}
-            }}
-            if (candidates.length === 0) return {{ok: false}};
-            // 优先选最宽的（真正的 tab 通常是几个文字+padding）
-            candidates.sort(function(a,b){{return b.w - a.w}});
-            candidates[0].el.setAttribute('data-cmt-tab', '1');
-            return {{ok: true, x: candidates[0].x, y: candidates[0].y}};
-        """)
-        if not info.get("ok"):
-            self.L(f"⚠ 未找到「{tab_name}」标签", "yellow")
-            return False
-        self.L(f"  点击「{tab_name}」@ ({info['x']:.0f}, {info['y']:.0f})", "white")
-        self._mouse_click(info["x"], info["y"])
-        time.sleep(3)
-        return True
-
-    def _cmt_click_first_item(self):
-        """在浮窗内点击第一条评论项"""
-        info = self._cmt_find("""
-            var selectors = [
-                '[class*="message-item"]','[class*="conversation-item"]',
-                '[class*="msgItem"]','[class*="notice-item"]',
-                '[class*="list-item"]','[class*="comment-item"]'
-            ];
-            for (var s = 0; s < selectors.length; s++) {
-                var items = document.querySelectorAll(selectors[s]);
-                for (var i = 0; i < items.length; i++) {
-                    var r = items[i].getBoundingClientRect();
-                    if (r.width > 120 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
-                        items[i].setAttribute('data-cmt-first', '1');
-                        return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2,
-                                text: (items[i].textContent||'').trim().substring(0, 120)};
-                    }
-                }
-            }
-            return {ok: false};
-        """)
-        if not info.get("ok"):
-            self.L("⚠ 未找到评论项", "yellow")
-            return False, ""
-        self._mouse_click(info["x"], info["y"])
-        time.sleep(3)
-        return True, info.get("text", "")
-
-    def _cmt_click_text_button(self, text):
-        """全页面搜索文字按钮并 CDP 点击"""
-        esc = text.replace("\\", "\\\\").replace("'", "\\'")
-        info = self._cmt_find(f"""
-            var els = document.querySelectorAll('span,button,div,a,li');
-            for (var i = 0; i < els.length; i++) {{
-                var t = (els[i].textContent || '').trim();
-                if (t === '{esc}') {{
-                    var r = els[i].getBoundingClientRect();
-                    if (r.width > 8 && r.width < 300 && r.height > 8 && r.height < 120) {{
-                        els[i].setAttribute('data-cmt-btn', '1');
-                        return {{ok: true, x: r.x + r.width/2, y: r.y + r.height/2}};
-                    }}
-                }}
-            }}
-            return {{ok: false}};
-        """)
-        if not info.get("ok"):
-            return False
-        self._mouse_click(info["x"], info["y"])
-        time.sleep(1.5)
-        return True
-
-    def _cmt_focus_and_type(self, text):
-        """找到输入框并 CDP 点击聚焦"""
-        info = self._cmt_find("""
-            var edts = document.querySelectorAll('[contenteditable="true"]');
-            for (var i = 0; i < edts.length; i++) {
-                var r = edts[i].getBoundingClientRect();
-                if (r.height > 20 && r.height < 300 && r.width > 100 && r.top > window.innerHeight * 0.25) {
-                    edts[i].setAttribute('data-cmt-input', '1');
-                    return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2};
-                }
-            }
-            var ins = document.querySelectorAll('textarea,input[type="text"]');
-            for (var i = 0; i < ins.length; i++) {
-                var r = ins[i].getBoundingClientRect();
-                if (r.height > 20 && r.width > 100) {
-                    ins[i].setAttribute('data-cmt-input', '1');
-                    return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2};
-                }
-            }
-            return {ok: false};
-        """)
-        if not info.get("ok"):
-            return False
-        self._mouse_click(info["x"], info["y"])
-        time.sleep(0.5)
-        try:
-            edt = self._d.find_element(By.CSS_SELECTOR, '[data-cmt-input="1"]')
-            self._paste(text, edt)
-        except:
-            self._paste(text)
-        time.sleep(1)
-        return True
+            return None
 
     def _cmt_cycle(self):
-        """一轮评论检测+回复（CDP 鼠标事件 + 全页面 JS 找坐标）"""
+        """一轮评论检测+回复（Selenium ActionChains + 全页面JS动态找坐标）"""
         try:
             self._switch_tab(TAB_HOME)
             if "www.douyin.com" not in (self._d.current_url or ""):
@@ -448,50 +306,198 @@ class AccountWorker(QThread):
                 self.L("⏳ 加载抖音首页...", "white")
                 time.sleep(5)
 
-            # 1. CDP hover 通知图标 → 浮窗打开
-            self.L("🔔 悬停通知图标...", "white")
-            if not self._cmt_hover_notification():
+            # 1. 找并点击通知图标
+            self.L("🔔 点击通知...", "white")
+            found = self._cmt_js("""
+                var icons = document.querySelectorAll('header [class*="icon"]');
+                var best = null, bx = -1;
+                for (var i = 0; i < icons.length; i++) {
+                    var r = icons[i].getBoundingClientRect();
+                    if (r.width >= 16 && r.width <= 70 && r.height >= 16 && r.height <= 70
+                        && r.x > window.innerWidth * 0.5 && r.x > bx && r.y < 100) {
+                        best = icons[i]; bx = r.x;
+                    }
+                }
+                if (!best) {
+                    var els = document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="bell"]');
+                    for (var i = 0; i < els.length; i++) {
+                        var r = els[i].getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.width < 80 && r.y < 100 && r.x > window.innerWidth * 0.5) {
+                            best = els[i]; break;
+                        }
+                    }
+                }
+                if (!best) return null;
+                var r = best.getBoundingClientRect();
+                return {x: r.x + r.width/2, y: r.y + r.height/2};
+            """)
+            if not found:
+                self.L("⚠ 未找到通知图标", "yellow")
                 return
+            self._cmt_click_at(found["x"], found["y"])
+            time.sleep(3)
 
-            # 2. CDP 点击「评论」tab（全页面搜文字，不依赖 overlay class）
-            self.L("📋 点击评论标签...", "white")
-            if not self._cmt_click_tab("评论"):
-                self.L("⚠ 尝试「互动」标签...", "yellow")
-                if not self._cmt_click_tab("互动"):
-                    self.L("⚠ 尝试「通知」标签...", "yellow")
-                    if not self._cmt_click_tab("通知"):
-                        self._d.get(DY_HOME); time.sleep(3); return
+            # 2. 点击「全部消息」
+            self.L("📋 点击「全部消息」...", "white")
+            found = self._cmt_js("""
+                var els = document.querySelectorAll('span,div,button,a');
+                for (var i = 0; i < els.length; i++) {
+                    var t = (els[i].textContent || '').trim();
+                    if (t.indexOf('全部消息') >= 0 || t.indexOf('查看全部') >= 0) {
+                        var r = els[i].getBoundingClientRect();
+                        if (r.width > 30 && r.height > 10) {
+                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                        }
+                    }
+                }
+                return null;
+            """)
+            if found:
+                self._cmt_click_at(found["x"], found["y"])
+                time.sleep(1.5)
 
-            # 3. 点击第一条评论
-            ok, ct = self._cmt_click_first_item()
-            if not ok or not ct:
+            # 3. 动态找「评论」筛选并点击
+            self.L("💬 找「评论」筛选...", "white")
+            found = self._cmt_js("""
+                var all = document.querySelectorAll('span, div, a, button');
+                for (var i = 0; i < all.length; i++) {
+                    var t = (all[i].textContent || '').trim();
+                    if (t === '评论') {
+                        var r = all[i].getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.width < 200) {
+                            return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                        }
+                    }
+                }
+                return null;
+            """)
+            if not found:
+                self.L("⚠ 未找到「评论」标签", "yellow")
+                self._d.get(DY_HOME); time.sleep(3); return
+            self.L(f"  点击「评论」@ ({found['x']}, {found['y']})", "white")
+            self._cmt_click_at(found["x"], found["y"])
+            time.sleep(2)
+
+            # 4. 提取第一条评论
+            self.L("🔍 提取第一条评论...", "white")
+            ct = self._cmt_js("""
+                var items = document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"],[class*="list-item"],[class*="comment-item"]');
+                for (var i = 0; i < items.length; i++) {
+                    var r = items[i].getBoundingClientRect();
+                    if (r.width > 120 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
+                        items[i].setAttribute('data-cmt-first', '1');
+                        return (items[i].textContent||'').trim().substring(0, 120);
+                    }
+                }
+                return '';
+            """)
+            if not ct:
+                self.L("⚠ 未找到评论", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
             fk = ct[:40]
             rec = load_replied(self.name)
             if fk in rec.get("cmt_fps", []):
+                self.L(f"⏭ 已回复过，跳过", "white")
                 self._d.get(DY_HOME); time.sleep(3); return
 
-            self.L(f'💬 新评论: "{ct}"', "white")
+            self.L(f'💬 新评论: "{ct[:60]}"', "white")
 
-            # 4. 点「回复」
-            if not self._cmt_click_text_button("回复"):
+            # 5. 点击评论项
+            info = self._cmt_js("""
+                var el = document.querySelector('[data-cmt-first="1"]');
+                if (!el) return null;
+                var r = el.getBoundingClientRect();
+                return {x: r.x + r.width/2, y: r.y + r.height/2};
+            """)
+            if not info:
+                self._d.get(DY_HOME); time.sleep(3); return
+            self._cmt_click_at(info["x"], info["y"])
+            time.sleep(3)
+
+            # 6. 找「回复」按钮并点击（多候选验证）
+            self.L("✏️ 找「回复」按钮...", "white")
+            candidates = self._cmt_js("""
+                var results = [];
+                var all = document.querySelectorAll('span, button, div, a');
+                for (var i = 0; i < all.length; i++) {
+                    var t = (all[i].textContent || '').trim();
+                    if (t === '回复') {
+                        var r = all[i].getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.width < 200 && r.y > 80) {
+                            results.push({x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)});
+                        }
+                    }
+                }
+                return results;
+            """)
+            reply_ok = False
+            for c in (candidates or []):
+                self._cmt_click_at(c["x"], c["y"])
+                time.sleep(1.5)
+                v = self._cmt_js("""
+                    var spans = document.querySelectorAll('span');
+                    for (var i = 0; i < spans.length; i++) {
+                        if ((spans[i].textContent || '').trim() === '回复中') return true;
+                    }
+                    var inputs = document.querySelectorAll('[contenteditable="true"], input, textarea');
+                    for (var i = 0; i < inputs.length; i++) {
+                        var txt = (inputs[i].textContent || inputs[i].value || '').trim();
+                        if (txt.indexOf('回复 @') >= 0 || txt.indexOf('回复中') >= 0) return true;
+                    }
+                    return false;
+                """)
+                if v:
+                    reply_ok = True
+                    break
+            if not reply_ok:
+                self.L("⚠ 未找到有效回复按钮", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
-            # 5. 输入 → 发送
-            if not self._cmt_focus_and_type(self.cmt_text):
-                self.L("⚠ 未找到输入框", "yellow")
-                self._d.get(DY_HOME); time.sleep(3); return
+            # 7. 输入回复
+            info = self._cmt_js("""
+                var el = document.querySelector('[contenteditable="true"]');
+                if (!el) return null;
+                var r = el.getBoundingClientRect();
+                if (r.width > 50 && r.height > 10) {
+                    el.setAttribute('data-cmt-input', '1');
+                    return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                }
+                return null;
+            """)
+            if info:
+                self._cmt_click_at(info["x"], info["y"])
+                time.sleep(0.5)
+            try:
+                edt = self._d.find_element(By.CSS_SELECTOR, '[data-cmt-input="1"]')
+                self._paste(self.cmt_text, edt)
+            except:
+                self._paste(self.cmt_text)
+            time.sleep(1)
 
-            ok = self._cmt_click_text_button("发送")
-            if ok:
-                rec["cmt_fps"].append(fk)
-                save_replied(self.name, rec)
-                self._cmt_n += 1
-                self.cmt_cnt.emit(self.name, self._cmt_n)
-                self.L(f"✅ 评论已回复 | 累计: {self._cmt_n}", "green")
-            else:
-                self.L("⚠ 未找到发送按钮", "yellow")
+            # 8. 找「发送」按钮并点击
+            info = self._cmt_js("""
+                var all = document.querySelectorAll('span, button, div');
+                for (var i = 0; i < all.length; i++) {
+                    if ((all[i].textContent || '').trim() === '发送') {
+                        var r = all[i].getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) {
+                            return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                        }
+                    }
+                }
+                return null;
+            """)
+            if info:
+                self.L("📤 点击发送...", "white")
+                self._cmt_click_at(info["x"], info["y"])
+                time.sleep(2)
+
+            rec["cmt_fps"].append(fk)
+            save_replied(self.name, rec)
+            self._cmt_n += 1
+            self.cmt_cnt.emit(self.name, self._cmt_n)
+            self.L(f"✅ 评论已回复 | 累计: {self._cmt_n}", "green")
 
             self._d.get(DY_HOME)
             time.sleep(3)
