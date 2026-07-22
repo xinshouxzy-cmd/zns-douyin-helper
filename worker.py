@@ -459,17 +459,40 @@ class AccountWorker(QThread):
 
             # ====== 4. 提取第一条评论 ======
             self.L("🔍 提取第一条评论...", "white")
-            ct = self._cmt_js("""
-                var items = document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"],[class*="list-item"],[class*="comment-item"]');
-                for (var i = 0; i < items.length; i++) {
-                    var r = items[i].getBoundingClientRect();
-                    if (r.width > 120 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
-                        items[i].setAttribute('data-cmt-first', '1');
-                        return (items[i].textContent||'').trim().substring(0, 120);
+            p_item = pos.get("4_第一条评论") if pos else None
+            ct = None
+
+            # 策略A：用录制坐标 + elementFromPoint（最可靠，和 comment_auto_reply.py 一致）
+            if p_item:
+                ct = self._cmt_js(f"""
+                    var el = document.elementFromPoint({p_item['x']}, {p_item['y']});
+                    if (!el) return '';
+                    var target = el;
+                    for (var i = 0; i < 5; i++) {{
+                        if (target.parentElement) target = target.parentElement;
+                        if ((target.textContent || '').trim().length > 20) break;
+                    }}
+                    var text = (target.textContent || '').trim().substring(0, 120);
+                    if (text) target.setAttribute('data-cmt-first', '1');
+                    return text;
+                """)
+                if ct:
+                    self.L(f"  坐标定位到评论项 ({p_item['x']}, {p_item['y']})", "white")
+
+            # 策略B：CSS class 兜底（抖音类名常为随机 hash，可能无效）
+            if not ct:
+                ct = self._cmt_js("""
+                    var items = document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"],[class*="list-item"],[class*="comment-item"]');
+                    for (var i = 0; i < items.length; i++) {
+                        var r = items[i].getBoundingClientRect();
+                        if (r.width > 120 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
+                            items[i].setAttribute('data-cmt-first', '1');
+                            return (items[i].textContent||'').trim().substring(0, 120);
+                        }
                     }
-                }
-                return '';
-            """)
+                    return '';
+                """)
+
             if not ct:
                 self.L("⚠ 未找到评论", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
