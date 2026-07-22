@@ -1,19 +1,13 @@
 {
   "accounts": [
     {
-      "name": "遵义农商银行",
+      "name": "账号1",
       "enabled": true,
       "pm_enabled": true,
-      "pm_reply": "请问您是需要办理什么业务呢？如需帮助请留下联系电话～",
+      "pm_reply": "请问您需要办理什么业务呢？如需帮助请留下联系电话～",
       "comment_enabled": true,
       "comment_reply": "感谢您的关注与支持！如有业务需求欢迎私信咨询～",
-      "comment_coords_file": "comment_data/account_1/positions.json",
       "chrome_profile": "chrome_profiles/account_1"
     }
-  ],
-  "settings": {
-    "pm_poll_interval": 8,
-    "comment_poll_interval": 30,
-    "log_max_lines": 500
-  }
+  ]
 }

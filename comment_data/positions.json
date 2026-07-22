@@ -1,0 +1,10 @@
+{
+  "1_click_notification": {"x": 1860, "y": 40, "desc": "点击页面右上角通知铃铛图标"},
+  "2_click_all_messages": {"x": 1720, "y": 80, "desc": "点击「全部消息」标签"},
+  "3_click_comment_filter": {"x": 1720, "y": 160, "desc": "点击「评论」筛选"},
+  "4_click_first_conversation": {"x": 1720, "y": 350, "desc": "点击第一条评论"},
+  "5_click_reply_button": {"x": 1500, "y": 480, "desc": "点击「回复」按钮"},
+  "7_send_button": {"x": 1450, "y": 720, "desc": "点击「发送」按钮"},
+  "_resolution": "1920x1080",
+  "_note": "如坐标不准确，请运行 generate_coords.py 重新录制"
+}

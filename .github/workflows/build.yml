@@ -29,10 +29,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path replied_records | Out-Null
           New-Item -ItemType Directory -Force -Path chrome_profiles | Out-Null
-          New-Item -ItemType Directory -Force -Path comment_data | Out-Null
           "" | Out-File -FilePath replied_records\.gitkeep -Encoding UTF8
           "" | Out-File -FilePath chrome_profiles\.gitkeep -Encoding UTF8
-          "" | Out-File -FilePath comment_data\.gitkeep -Encoding UTF8
 
       - name: Get chromedriver
         run: python -c "from webdriver_manager.chrome import ChromeDriverManager; p = ChromeDriverManager().install(); import shutil; shutil.copy(p, 'chromedriver.exe')"
