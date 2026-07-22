@@ -33,30 +33,18 @@ jobs:
           "" | Out-File -FilePath replied_records\.gitkeep -Encoding UTF8
           "" | Out-File -FilePath chrome_profiles\.gitkeep -Encoding UTF8
 
-      - name: Download Chrome Portable + ChromeDriver
+      - name: Download ChromeDriver
         shell: pwsh
         run: |
-          Write-Host "下载 Chrome for Testing..."
+          Write-Host "下载 ChromeDriver..."
           $ver = (Invoke-RestMethod 'https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json').channels.Stable.version
           Write-Host "版本: $ver"
-
-          # ChromeDriver
-          Write-Host "下载 ChromeDriver..."
           Invoke-WebRequest "https://storage.googleapis.com/chrome-for-testing-public/$ver/win64/chromedriver-win64.zip" -OutFile "chromedriver.zip"
           Expand-Archive "chromedriver.zip" -DestinationPath "." -Force
           Move-Item "chromedriver-win64/chromedriver.exe" "chromedriver.exe" -Force
           Remove-Item "chromedriver.zip" -Force
           Remove-Item "chromedriver-win64" -Recurse -Force
-
-          # Chrome Portable
-          Write-Host "下载 Chrome Portable (~150MB)..."
-          Invoke-WebRequest "https://storage.googleapis.com/chrome-for-testing-public/$ver/win64/chrome-win64.zip" -OutFile "chrome.zip"
-          Expand-Archive "chrome.zip" -DestinationPath "runtime" -Force
-          Move-Item "runtime/chrome-win64" "runtime/chrome" -Force
-          Remove-Item "chrome.zip" -Force
-
-          Write-Host "内置浏览器就绪"
-          Get-ChildItem "runtime/chrome" | Select-Object -First 5
+          Write-Host "ChromeDriver 就绪"
 
       - name: Build
         shell: pwsh
@@ -65,7 +53,6 @@ jobs:
             --add-data "config.json;." `
             --add-data "worker.py;." `
             --add-data "chromedriver.exe;." `
-            --add-data "runtime;runtime" `
             --add-data "replied_records;replied_records" `
             --add-data "chrome_profiles;chrome_profiles" `
             --add-data "comment_data;comment_data" `
@@ -80,6 +67,9 @@ jobs:
           遵农商·抖音客服助手 v$env:VERSION
           ===================================
 
+          【使用前请确保已安装 Chrome 浏览器】
+            如未安装，请先下载: https://www.google.cn/chrome/
+
           【使用方法】
             双击 遵农商_抖音客服助手.exe 即可运行
             首次使用需扫码登录抖音创作者平台
@@ -87,7 +77,6 @@ jobs:
           【功能】
             - 多账号抖音私信自动回复
             - 多账号抖音评论自动回复
-            - 内置 Chrome 浏览器（无需额外安装）
 
           遵义农商银行 出品
           "@ | Out-File -FilePath "dist\遵农商_抖音客服助手\使用说明.txt" -Encoding UTF8
