@@ -116,8 +116,15 @@ class AccountWorker(QThread):
             # 系统 Chrome → webdriver_manager 自动下载匹配版本
             from webdriver_manager.chrome import ChromeDriverManager
             self.L("检测系统 Chrome 版本...", "white")
+            # 清理可能残留的锁文件（上次异常退出导致）
+            lock_file = os.path.join(os.path.expanduser("~"), ".wdm", ".wdm-lock-chromedriver-win64")
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                    self.L("清理残留锁文件", "white")
+                except:
+                    pass
             try:
-                # 检查是否已缓存，避免静默下载卡住
                 cache_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", "win64")
                 cached = os.path.isdir(cache_dir) and os.listdir(cache_dir)
                 if cached:
@@ -128,8 +135,13 @@ class AccountWorker(QThread):
                 if not cached:
                     self.L("✓ 驱动下载完成", "green")
             except Exception as e:
-                self.L(f"⚠ 驱动下载失败：{e}", "yellow")
-                self.L("请检查网络连接，或手动安装 ChromeDriver", "yellow")
+                msg2 = str(e)
+                if "lock" in msg2.lower() or "wdm-lock" in msg2:
+                    if os.path.exists(lock_file):
+                        os.remove(lock_file)
+                    self.L("⚠ 驱动锁冲突，已清理，请重新启动", "yellow")
+                else:
+                    self.L(f"⚠ 驱动下载失败：{e}", "yellow")
                 raise
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
