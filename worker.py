@@ -601,20 +601,46 @@ class AccountWorker(QThread):
 
             # ====== 8. 发送 ======
             sent_info = self._cmt_js("""
-                var all = document.querySelectorAll('span, button, div');
+                var all = document.querySelectorAll('span, button, div, a, [role="button"]');
                 for (var i = 0; i < all.length; i++) {
-                    if ((all[i].textContent || '').trim() === '发送') {
+                    var t = (all[i].textContent || '').trim();
+                    if (t === '发送' || t === '回复' || t === '发布') {
                         var r = all[i].getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0)
+                        if (r.width > 0 && r.height > 0 && r.y > window.innerHeight * 0.6)
                             return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
                     }
                 }
+                // 兜底：找右下角的按钮（发送按钮通常在输入框右侧）
+                var btns = document.querySelectorAll('button, [role="button"]');
+                for (var i = btns.length-1; i >= 0; i--) {
+                    var r = btns[i].getBoundingClientRect();
+                    if (r.width > 20 && r.height > 20 && r.x > window.innerWidth * 0.7 && r.y > window.innerHeight * 0.8)
+                        return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                }
                 return null;
             """)
+            # 录制坐标兜底
+            p_send = pos.get("7_发送按钮") if pos else None
+            if not sent_info and p_send:
+                sent_info = {"x": p_send["x"], "y": p_send["y"]}
+                self.L("📤 坐标定位发送按钮...", "white")
             if sent_info:
                 self.L("📤 点击发送...", "white")
                 self._cmt_click_at(sent_info["x"], sent_info["y"])
                 time.sleep(2)
+                # 验证是否发送成功：输入框应该被清空
+                verify = self._cmt_js("""
+                    var el = document.querySelector('[contenteditable="true"]');
+                    if (!el) return true;
+                    var txt = (el.textContent || '').trim();
+                    return txt.length === 0;
+                """)
+                if not verify:
+                    self.L("⚠ 发送可能失败，重试一次...", "yellow")
+                    self._cmt_click_at(sent_info["x"], sent_info["y"])
+                    time.sleep(2)
+            else:
+                self.L("⚠ 未找到发送按钮", "yellow")
 
             rec["cmt_fps"].append(fk)
             save_replied(self.name, rec)
