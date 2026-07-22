@@ -7,6 +7,7 @@
 
 import os, sys, json, csv, traceback
 from datetime import datetime
+from threading import Event
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -19,12 +20,12 @@ from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor
 from worker import AccountWorker, BASE_DIR
 
 # ── 配置 ──────────────────────────────────────────
-APP_TITLE = "遵农商·抖音客服助手 v2.0"
+APP_TITLE = "遵农商·抖音客服助手"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_PM_REPLY = "请问您需要办理什么业务呢？如需帮助请留下联系电话～"
 DEFAULT_CMT_REPLY = "感谢您的关注与支持！如有业务需求欢迎私信咨询～"
-PM_POLL = 5      # 私信轮询间隔（秒），内置不可改
-CMT_POLL = 30    # 评论轮询间隔（秒），内置不可改
+PM_POLL = 5
+CMT_POLL = 30
 
 
 def load_config():
@@ -96,6 +97,7 @@ class AccountPage(QWidget):
         self.worker = None
         self._pm_count = 0
         self._cmt_count = 0
+        self._in_login_wait = False
         self._build()
 
     def _build(self):
@@ -116,6 +118,13 @@ class AccountPage(QWidget):
         row1.addWidget(self.le_name, 1)
         row1.addWidget(self.lb_status)
         lay.addLayout(row1)
+
+        # ── 确认登录按钮（初始隐藏）──
+        self.btn_login = QPushButton("✓ 确认已登录")
+        self.btn_login.setStyleSheet(_btn(C_GREEN, "black"))
+        self.btn_login.clicked.connect(self._confirm_login)
+        self.btn_login.setVisible(False)
+        lay.addWidget(self.btn_login)
 
         # ── 私信回复 ──
         g_pm = QGroupBox("💬 私信自动回复")
@@ -161,7 +170,6 @@ class AccountPage(QWidget):
 
     def _on_name_changed(self, txt):
         self._save()
-        # 更新标签页标题
         parent = self.main.tabs
         for i in range(parent.count()):
             if parent.widget(i) == self:
@@ -180,6 +188,14 @@ class AccountPage(QWidget):
             cfg["accounts"][self.idx] = self.cfg
             save_config(cfg)
 
+    def _confirm_login(self):
+        """用户点击「确认已登录」"""
+        if self.worker:
+            self.worker.confirm_login()
+            self.btn_login.setVisible(False)
+            self.lb_status.setText("登录确认中...")
+            self.lb_status.setStyleSheet(f"color:{C_GREEN};")
+
     def _toggle(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
@@ -190,6 +206,7 @@ class AccountPage(QWidget):
             self.worker = AccountWorker(self.cfg, PM_POLL, CMT_POLL)
             self.worker.log.connect(self.main._append_log)
             self.worker.status.connect(self._on_status)
+            self.worker.waiting_login.connect(self._on_waiting_login)
             self.worker.pm_cnt.connect(self._on_pm_cnt)
             self.worker.cmt_cnt.connect(self._on_cmt_cnt)
             self.worker.stopped.connect(self._on_stopped)
@@ -198,6 +215,14 @@ class AccountPage(QWidget):
             self.btn_start.setStyleSheet(_btn(C_RED))
             self.lb_status.setText("⏳ 启动中...")
             self.lb_status.setStyleSheet(f"color:{C_GREEN};")
+
+    def _on_waiting_login(self, name):
+        """Worker 进入等待登录状态，显示确认按钮"""
+        if name == self.cfg.get("name"):
+            self._in_login_wait = True
+            self.btn_login.setVisible(True)
+            self.lb_status.setText("📱 请扫码登录后点击确认")
+            self.lb_status.setStyleSheet(f"color:{C_YELLOW};")
 
     def _on_status(self, name, s):
         if name == self.cfg.get("name"):
@@ -218,6 +243,8 @@ class AccountPage(QWidget):
             self.btn_start.setText("▶ 启动")
             self.btn_start.setStyleSheet(_btn("#0E639C"))
             self.btn_start.setEnabled(True)
+            self.btn_login.setVisible(False)
+            self._in_login_wait = False
             self.lb_status.setText("⏸ 已停止")
             self.lb_status.setStyleSheet("color:#888;")
 
@@ -311,7 +338,6 @@ class MainWindow(QMainWindow):
         self._pages = []
         self._load_accounts()
 
-    # ── 账号管理 ──
     def _load_accounts(self):
         cfg = load_config()
         for i, ac in enumerate(cfg.get("accounts", [])):
@@ -345,13 +371,11 @@ class MainWindow(QMainWindow):
     def _close_tab(self, index):
         if self.tabs.count() <= 0:
             return
-        # 先停止该账号的 worker
         page = self._pages[index] if index < len(self._pages) else None
         if page and page.worker and page.worker.isRunning():
             page.worker.stop()
             page.worker.wait(2000)
 
-        # 从配置中删除
         cfg = load_config()
         if index < len(cfg.get("accounts", [])):
             cfg["accounts"].pop(index)
@@ -360,7 +384,6 @@ class MainWindow(QMainWindow):
         self._pages.pop(index)
         self.tabs.removeTab(index)
 
-        # 重新编号
         for i, p in enumerate(self._pages):
             p.idx = i
             p._save()
@@ -400,7 +423,6 @@ class MainWindow(QMainWindow):
     def _clear_log(self):
         self.log_box.clear()
 
-    # ── 日志 ──
     def _append_log(self, name, msg):
         ts = datetime.now().strftime("%H:%M:%S")
         if msg.startswith("[green]"):

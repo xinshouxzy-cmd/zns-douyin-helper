@@ -11,11 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from commit
+      - name: Get version
         shell: bash
         run: |
-          VER=$(git log -1 --pretty=%s | grep -oP '^v[\d.]+' || echo "v1.0.0")
+          VER=$(git log -1 --pretty=%s | grep -oP 'v[\d.]+' || echo "v2.0")
           echo "VERSION=$VER" >> $GITHUB_ENV
+          echo "BUILD_ID=${{ github.run_number }}" >> $GITHUB_ENV
 
       - uses: actions/setup-python@v5
         with:
@@ -38,8 +39,7 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          $name = "遵农商_抖音客服助手_$env:VERSION"
-          pyinstaller --onedir --windowed --name $name `
+          pyinstaller --onedir --windowed --name "遵农商_抖音客服助手" `
             --add-data "config.json;." `
             --add-data "worker.py;." `
             --add-data "chromedriver.exe;." `
@@ -53,24 +53,31 @@ jobs:
       - name: Add readme
         shell: pwsh
         run: |
-          $name = "遵农商_抖音客服助手_$env:VERSION"
           @"
-          遵农商·抖音客服助手 $env:VERSION
+          遵农商·抖音客服助手 v$env:VERSION
 
-          双击 $name.exe 即可运行。
+          双击 遵农商_抖音客服助手.exe 即可运行。
           首次使用需扫码登录抖音创作者平台。
 
           遵义农商银行 出品
-          "@ | Out-File -FilePath "dist\$name\使用说明.txt" -Encoding UTF8
+          "@ | Out-File -FilePath "dist\遵农商_抖音客服助手\使用说明.txt" -Encoding UTF8
 
-      - name: Package
+      - name: Package zip
         shell: pwsh
         run: |
-          $name = "遵农商_抖音客服助手_$env:VERSION"
-          Compress-Archive -Path "dist\$name\*" -DestinationPath "$name.zip"
+          Compress-Archive -Path "dist\遵农商_抖音客服助手\*" -DestinationPath "遵农商_抖音客服助手_v$env:VERSION.zip"
 
-      - name: Upload
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "遵农商_抖音客服助手_${{ env.VERSION }}"
-          path: "*.zip"
+          name: "遵农商_抖音客服助手_v${{ env.VERSION }}"
+          path: "dist/遵农商_抖音客服助手/**"
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "${{ env.VERSION }}-${{ env.BUILD_ID }}"
+          name: "遵农商·抖音客服助手 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
+          files: "遵农商_抖音客服助手_v${{ env.VERSION }}.zip"
+          prerelease: false
+        continue-on-error: true

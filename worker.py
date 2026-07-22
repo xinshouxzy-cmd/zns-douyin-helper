@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 遵农商·抖音客服助手 — 工作线程
-单账号同时处理私信+评论自动回复
+单浏览器双标签页：首页(评论) + 私信页(私信)
 """
 
 import os, sys, json, time, re, subprocess, traceback
+from threading import Event
 from datetime import datetime
 
 from selenium import webdriver
@@ -26,6 +27,9 @@ DY_HOME = "https://www.douyin.com"
 PM_URL = "https://creator.douyin.com/creator-micro/chat?isPopup=1"
 DEFAULT_COORDS = os.path.join(BASE_DIR, "comment_data", "positions.json")
 
+TAB_HOME = 0  # 首页 tab 索引（评论用）
+TAB_PM = 1    # 私信 tab 索引（私信用）
+
 
 def find_chromedriver():
     for c in [
@@ -38,7 +42,6 @@ def find_chromedriver():
     return "chromedriver"
 
 
-# ── 已回复记录 ──
 def _rpath(name):
     safe = name.replace("/", "_").replace("\\", "_")
     return os.path.join(REPLIED_DIR, f"{safe}.json")
@@ -60,6 +63,7 @@ def save_replied(name, data):
 class AccountWorker(QThread):
     log = pyqtSignal(str, str)
     status = pyqtSignal(str, str)
+    waiting_login = pyqtSignal(str)
     pm_cnt = pyqtSignal(str, int)
     cmt_cnt = pyqtSignal(str, int)
     stopped = pyqtSignal(str)
@@ -69,10 +73,10 @@ class AccountWorker(QThread):
         self.cfg = cfg
         self.name = cfg.get("name", "?")
         self.pm_on = cfg.get("pm_enabled", True)
-        self.pm_text = cfg.get("pm_reply", "你好，请问需要办理什么业务？")
+        self.pm_text = cfg.get("pm_reply", "你好")
         self.cmt_on = cfg.get("comment_enabled", True)
         self.cmt_text = cfg.get("comment_reply", "感谢关注！")
-        self.profile = os.path.join(BASE_DIR, cfg.get("chrome_profile", f"chrome_profiles/{self.name}"))
+        self.profile = os.path.join(BASE_DIR, cfg.get("chrome_profile", "chrome_profiles/account_1"))
         self.pm_poll = pm_poll
         self.cmt_poll = cmt_poll
         self._run = True
@@ -80,22 +84,26 @@ class AccountWorker(QThread):
         self._pm_n = 0
         self._cmt_n = 0
         self._coords = None
+        self._login_ok = Event()
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
 
     def stop(self):
         self._run = False
+        self._login_ok.set()  # 防止卡在等待登录
 
-    # ── 浏览器（单标签页）──
+    def confirm_login(self):
+        """用户在 GUI 点击「确认已登录」"""
+        self._login_ok.set()
+
+    # ── 浏览器启动 ──
     def _start_browser(self):
         opt = Options()
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
         opt.add_experimental_option("useAutomationExtension", False)
-
-        # macOS Keychain 兼容
         if sys.platform == "darwin":
             opt.add_argument("--use-mock-keychain")
 
@@ -103,33 +111,42 @@ class AccountWorker(QThread):
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
 
-        # 打开抖音首页，等待扫码登录
         d.get(DY_HOME)
         time.sleep(5)
         return d
 
-    # ── 私信回复 ──
-    def _go_pm_page(self):
-        """跳转到私信页面"""
-        self._d.get(PM_URL)
-        time.sleep(3)
-        # 关闭可能弹出的引导
+    def _switch_tab(self, idx):
+        """切换到指定标签页"""
         try:
-            close_btns = self._d.find_elements(By.XPATH, '//*[contains(@class,"close") or contains(text(),"关闭")]')
+            handles = self._d.window_handles
+            if idx < len(handles):
+                self._d.switch_to.window(handles[idx])
+        except:
+            pass
+
+    def _open_pm_tab(self):
+        """在新标签页打开私信页面"""
+        self._d.execute_script(f"window.open('{PM_URL}','_blank');")
+        time.sleep(4)
+        # 切到私信 tab 检查一下加载
+        self._switch_tab(TAB_PM)
+        time.sleep(2)
+        # 关闭弹窗
+        try:
+            close_btns = self._d.find_elements(By.XPATH,
+                '//*[contains(@class,"close") or contains(text(),"关闭")]')
             for b in close_btns[:3]:
                 try: b.click()
                 except: pass
         except: pass
 
+    # ── 私信回复 ──
     def _pm_cycle(self):
-        """一轮私信检测+回复"""
+        """一轮私信检测+回复（在 tab 1 执行）"""
         try:
-            # 确认在私信页面
-            current = self._d.current_url
-            if "creator-micro/chat" not in current:
-                self._go_pm_page()
+            self._switch_tab(TAB_PM)
 
-            # 点击「陌生人」标签
+            # 点击「陌生人」
             try:
                 xp = '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[last()-1]/div/span'
                 tabs = self._d.find_elements(By.XPATH, xp)
@@ -139,7 +156,7 @@ class AccountWorker(QThread):
             except:
                 return
 
-            # 获取最新私信内容
+            # 获取最新私信
             try:
                 ctn = self._d.find_element(By.XPATH,
                     '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[2]/div/div/div/div/div[1]/div/div[2]')
@@ -161,17 +178,10 @@ class AccountWorker(QThread):
                 '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[3]/div/div[2]/div/div/div')
             inp.click()
             time.sleep(0.2)
-
-            if sys.platform == "darwin":
-                subprocess.run(["pbcopy"], input=self.pm_text.encode("utf-8"))
-                inp.send_keys(Keys.COMMAND, 'v')
-            else:
-                import pyperclip
-                pyperclip.copy(self.pm_text)
-                inp.send_keys(Keys.CONTROL, 'v')
+            self._paste(self.pm_text, inp)
             time.sleep(0.5)
 
-            # 发送按钮
+            # 发送
             btn = self._d.find_element(By.XPATH,
                 '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[3]/div/div[3]/div')
             btn.click()
@@ -197,18 +207,16 @@ class AccountWorker(QThread):
         except Exception as e:
             self.L(f"⚠ 私信异常: {e}", "yellow")
 
-    # ── 评论回复（坐标式）──
+    # ── 评论回复（坐标式，在 tab 0 首页执行）──
     def _load_coords(self):
-        """自动加载内置坐标文件"""
         if not os.path.exists(DEFAULT_COORDS):
             self.L("⚠️ 评论坐标文件未找到，评论回复将跳过", "yellow")
-            self.L("   请先运行坐标录制工具生成 comment_data/positions.json", "yellow")
             self.cmt_on = False
             return False
         try:
             with open(DEFAULT_COORDS, "r", encoding="utf-8") as f:
                 self._coords = json.load(f)
-            self.L(f"✅ 评论坐标已加载 ({len(self._coords)}步)", "green")
+            self.L(f"✅ 评论坐标已加载 ({len(self._coords)-2}步)", "green")
             return True
         except Exception as e:
             self.L(f"⚠️ 坐标加载失败: {e}", "yellow")
@@ -216,7 +224,6 @@ class AccountWorker(QThread):
             return False
 
     def _clk(self, x, y):
-        """点击指定坐标"""
         try:
             self._d.execute_script(f"document.elementFromPoint({x},{y}).click();")
         except:
@@ -228,13 +235,33 @@ class AccountWorker(QThread):
         except:
             return None
 
+    def _paste(self, text, elem=None):
+        """跨平台粘贴文本"""
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"))
+            if elem:
+                elem.send_keys(Keys.COMMAND, 'v')
+            else:
+                from selenium.webdriver.common.action_chains import ActionChains
+                ActionChains(self._d).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform()
+        else:
+            import pyperclip
+            pyperclip.copy(text)
+            if elem:
+                elem.send_keys(Keys.CONTROL, 'v')
+            else:
+                from selenium.webdriver.common.action_chains import ActionChains
+                ActionChains(self._d).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+
     def _cmt_cycle(self):
-        """一轮评论检测+回复"""
+        """一轮评论检测+回复（在 tab 0 首页执行）"""
         if not self._coords:
             return
 
         c = self._coords
         try:
+            self._switch_tab(TAB_HOME)
+
             # 确保在抖音首页
             current = self._d.current_url
             if "www.douyin.com" not in current:
@@ -254,7 +281,7 @@ class AccountWorker(QThread):
                 self._clk(c["3_click_comment_filter"]["x"], c["3_click_comment_filter"]["y"])
                 time.sleep(2)
 
-            # 步骤4：获取第一条评论内容
+            # 步骤4：获取第一条评论
             p4 = c["4_click_first_conversation"]
             fp = self._js(f"""let el=document.elementFromPoint({p4['x']},{p4['y']});
                 if(!el)return null;
@@ -280,7 +307,7 @@ class AccountWorker(QThread):
             self._clk(p4["x"], p4["y"])
             time.sleep(2.5)
 
-            # 步骤6：找并点击「回复」按钮
+            # 步骤6：找「回复」按钮
             reply_ok = False
             cands = self._js("""var r=[];var a=document.querySelectorAll('span,button,div,a');
                 for(var i=0;i<a.length;i++){var e=a[i],t=(e.textContent||'').trim();
@@ -306,20 +333,14 @@ class AccountWorker(QThread):
                 self._clk(c["5_click_reply_button"]["x"], c["5_click_reply_button"]["y"])
                 time.sleep(1.5)
 
-            # 步骤7：输入回复内容
+            # 步骤7：输入回复
             try:
-                self._d.execute_script("var e=document.querySelector('[contenteditable=\"true\"]');if(e)e.click();")
+                self._d.execute_script(
+                    "var e=document.querySelector('[contenteditable=\"true\"]');if(e)e.click();")
                 time.sleep(0.5)
                 edt = self._d.find_elements(By.CSS_SELECTOR, '[contenteditable="true"]')
                 if edt:
-                    e = edt[0]
-                    if sys.platform == "darwin":
-                        subprocess.run(["pbcopy"], input=self.cmt_text.encode("utf-8"))
-                        e.send_keys(Keys.COMMAND, 'v')
-                    else:
-                        import pyperclip
-                        pyperclip.copy(self.cmt_text)
-                        e.send_keys(Keys.CONTROL, 'v')
+                    self._paste(self.cmt_text, edt[0])
                 time.sleep(1)
             except Exception as ex:
                 self.L(f"⚠ 评论输入异常: {ex}", "yellow")
@@ -352,34 +373,40 @@ class AccountWorker(QThread):
         self.status.emit(self.name, "启动中...")
         self.L(f"▶ 启动 | 私信:{'开' if self.pm_on else '关'} 评论:{'开' if self.cmt_on else '关'}", "white")
 
-        # 内置加载坐标
         if self.cmt_on:
             self._load_coords()
 
         try:
+            # 打开浏览器（首页 tab）
             self._d = self._start_browser()
-            self.status.emit(self.name, "等待登录...")
-            self.L("📱 请扫码登录抖音", "white")
+            self.status.emit(self.name, "📱 请扫码登录后点击确认")
+
+            # 发信号让 GUI 显示「确认已登录」按钮
+            self.waiting_login.emit(self.name)
+            self.L("📱 请扫码登录，完成后点击「确认已登录」", "white")
+
+            # 等待用户点击确认
+            self._login_ok.wait()
+            if not self._run:
+                return
+
+            self.status.emit(self.name, "登录确认中...")
+            self.L("⏳ 正在打开私信页面...", "white")
+
+            # 在新标签页打开私信页面
+            self._open_pm_tab()
+
+            # 切回首页 tab
+            self._switch_tab(TAB_HOME)
+
+            self.status.emit(self.name, "已就绪，开始监控")
+            self.L(f"✅ 就绪 | 首页Tab(评论) + 私信Tab(私信)", "green")
 
             pt = 0
             ct = 0
-            first_login = True
 
             while self._run:
                 try:
-                    # 检测是否已登录
-                    if first_login:
-                        cookies = self._d.get_cookies()
-                        logged_in = any(c.get("name") == "sso_uid_tt" for c in cookies)
-                        if logged_in:
-                            self.status.emit(self.name, "已登录，开始监控...")
-                            self.L("✅ 登录成功", "green")
-                            first_login = False
-                        else:
-                            self.status.emit(self.name, "等待扫码登录...")
-                            time.sleep(3)
-                            continue
-
                     # 私信轮询
                     if self.pm_on and pt >= self.pm_poll:
                         pt = 0
