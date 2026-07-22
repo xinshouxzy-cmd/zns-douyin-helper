@@ -110,7 +110,6 @@ class AccountWorker(QThread):
         bundled = get_bundled_chrome()
         if bundled:
             opt.binary_location = bundled
-            # 内置 Chrome → 用同目录下匹配的 chromedriver
             driver_path = find_chromedriver()
         else:
             # 系统 Chrome → webdriver_manager 自动下载匹配版本
@@ -123,7 +122,17 @@ class AccountWorker(QThread):
         opt.add_experimental_option("detach", True)
         if sys.platform == "darwin":
             opt.add_argument("--use-mock-keychain")
-        d = webdriver.Chrome(service=Service(driver_path), options=opt)
+        try:
+            d = webdriver.Chrome(service=Service(driver_path), options=opt)
+        except Exception as e:
+            msg = str(e)
+            if "This version of ChromeDriver only supports" in msg:
+                raise RuntimeError("Chrome 浏览器版本不匹配，请更新 Chrome 到最新版本后重试") from e
+            if "cannot find Chrome binary" in msg or "chrome not found" in msg.lower():
+                raise RuntimeError("未找到 Chrome 浏览器，请先安装：https://www.google.cn/chrome/") from e
+            if "cannot connect" in msg.lower() or "connection refused" in msg.lower():
+                raise RuntimeError("无法连接到浏览器，请检查是否有杀毒软件拦截") from e
+            raise
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
         d.set_window_size(1100, 800)
