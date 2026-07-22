@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 遵农商·抖音客服助手 — 工作线程
-双标签页：创作者中心(评论) + 私信页(私信)
+双标签页：抖音首页(评论) + 私信页(私信)
 - 评论回复：JS 坐标检测 + ActionChains 真实鼠标点击（浮窗兼容）
 - 私信回复：基于 v42.1 成熟方案（不动）
 - 分时轮流：30s评论 → 20s私信 → 10s休息
@@ -25,7 +25,6 @@ REPLIED_DIR = os.path.join(BASE_DIR, "replied_records")
 os.makedirs(REPLIED_DIR, exist_ok=True)
 
 DY_HOME = "https://www.douyin.com"
-CMT_URL = "https://creator.douyin.com"
 PM_URL = "https://www.douyin.com/chat?isPopup=1"
 
 TAB_HOME = 0
@@ -438,9 +437,9 @@ class AccountWorker(QThread):
         """一轮评论检测+回复（JS坐标 + ActionChains真实鼠标点击）"""
         try:
             self._switch_tab(TAB_HOME)
-            if "creator.douyin.com" not in (self._d.current_url or ""):
-                self._d.get(CMT_URL)
-                self.L("⏳ 加载创作者中心...", "white")
+            if "www.douyin.com" not in (self._d.current_url or ""):
+                self._d.get(DY_HOME)
+                self.L("⏳ 加载抖音首页...", "white")
                 time.sleep(5)
 
             # 1. hover 通知图标 → 浮窗打开
@@ -454,28 +453,28 @@ class AccountWorker(QThread):
             if not self._cmt_click_tab_in_overlay("评论"):
                 self.L("⚠ 点击评论失败，尝试「互动」...", "yellow")
                 if not self._cmt_click_tab_in_overlay("互动"):
-                    self._d.get(CMT_URL); time.sleep(3); return
+                    self._d.get(DY_HOME); time.sleep(3); return
 
             # 3. 获取第一条评论
             ok, ct = self._cmt_click_first_item()
             if not ok or not ct:
-                self._d.get(CMT_URL); time.sleep(3); return
+                self._d.get(DY_HOME); time.sleep(3); return
 
             fk = ct[:40]
             rec = load_replied(self.name)
             if fk in rec.get("cmt_fps", []):
-                self._d.get(CMT_URL); time.sleep(3); return
+                self._d.get(DY_HOME); time.sleep(3); return
 
             self.L(f'💬 新评论: "{ct}"', "white")
 
             # 4. 点「回复」
             if not self._cmt_click_text_button("回复"):
-                self._d.get(CMT_URL); time.sleep(3); return
+                self._d.get(DY_HOME); time.sleep(3); return
 
             # 5. 输入 → 发送
             if not self._cmt_focus_and_type(self.cmt_text):
                 self.L("⚠ 未找到输入框", "yellow")
-                self._d.get(CMT_URL); time.sleep(3); return
+                self._d.get(DY_HOME); time.sleep(3); return
 
             ok = self._cmt_click_text_button("发送")
             if ok:
@@ -487,14 +486,14 @@ class AccountWorker(QThread):
             else:
                 self.L("⚠ 未找到发送按钮", "yellow")
 
-            self._d.get(CMT_URL)
+            self._d.get(DY_HOME)
             time.sleep(3)
 
         except WebDriverException:
             pass
         except Exception as e:
             self.L(f"⚠ 评论异常: {e}", "yellow")
-            try: self._d.get(CMT_URL)
+            try: self._d.get(DY_HOME)
             except: pass
 
     # ═══════════ 分时主循环 ═══════════
