@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 遵农商·抖音客服助手 — 工作线程
-双标签页：首页(评论) + 私信页(私信)
-- 评论回复：纯 JS 元素检测，不依赖坐标
-- 私信回复：基于 v42.1 成熟方案
+双标签页：创作者中心(评论) + 私信页(私信)
+- 评论回复：JS 坐标检测 + ActionChains 真实鼠标点击（浮窗兼容）
+- 私信回复：基于 v42.1 成熟方案（不动）
 - 分时轮流：30s评论 → 20s私信 → 10s休息
 """
 
@@ -25,6 +25,7 @@ REPLIED_DIR = os.path.join(BASE_DIR, "replied_records")
 os.makedirs(REPLIED_DIR, exist_ok=True)
 
 DY_HOME = "https://www.douyin.com"
+CMT_URL = "https://creator.douyin.com"
 PM_URL = "https://www.douyin.com/chat?isPopup=1"
 
 TAB_HOME = 0
@@ -109,7 +110,7 @@ class AccountWorker(QThread):
         d = webdriver.Chrome(service=Service(find_chromedriver()), options=opt)
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
-        d.set_window_size(500, 800)
+        d.set_window_size(1100, 800)
         d.get(DY_HOME)
         time.sleep(5)
         return d
@@ -257,178 +258,226 @@ class AccountWorker(QThread):
         except Exception as e:
             self.L(f"⚠ 私信异常: {e}", "yellow")
 
-    # ═══════════ 评论回复（纯 JS，无坐标） ═══════════
+    # ═══════════ 评论回复（侦察兵方案：JS坐标 + 真实鼠标点击） ═══════════
 
-    def _clk_text(self, text):
-        """点击页面上显示指定文本的元素"""
-        esc = text.replace("\\", "\\\\").replace("'", "\\'")
-        return self._js(f"""
-            var els=document.querySelectorAll('span,a,div,button,li,p,label');
-            for(var i=0;i<els.length;i++){{
-                if((els[i].textContent||'').trim()==='{esc}'){{
-                    var r=els[i].getBoundingClientRect();
-                    if(r.width>0&&r.height>0&&r.height<120){{
-                        try{{els[i].click()}}catch(e){{els[i].dispatchEvent(new MouseEvent('click',{{bubbles:true}}))}}
-                        return true;
+    def _ac_click_at(self, x, y):
+        """在页面坐标 (x,y) 处执行真实鼠标点击"""
+        try:
+            body = self._d.find_element(By.TAG_NAME, 'body')
+            ActionChains(self._d).move_to_element_with_offset(body, int(x), int(y)).click().perform()
+            return True
+        except:
+            return False
+
+    def _ac_hover_at(self, x, y):
+        """在页面坐标 (x,y) 处悬停"""
+        try:
+            body = self._d.find_element(By.TAG_NAME, 'body')
+            ActionChains(self._d).move_to_element_with_offset(body, int(x), int(y)).perform()
+            return True
+        except:
+            return False
+
+    def _cmt_find_visible(self, js_code):
+        """用 JS 查找可见元素的坐标，返回 {x, y, w, h, ok}"""
+        try:
+            return self._d.execute_script(js_code) or {"ok": False}
+        except:
+            return {"ok": False}
+
+    def _cmt_hover_notification(self):
+        """悬停在 header 右侧通知图标上 → 浮窗出现"""
+        info = self._cmt_find_visible("""
+            var icons = document.querySelectorAll('header [class*="icon"]');
+            var best = null, bx = -1;
+            for (var i = 0; i < icons.length; i++) {
+                var r = icons[i].getBoundingClientRect();
+                if (r.width >= 16 && r.width <= 70 && r.height >= 16 && r.height <= 70
+                    && r.x > window.innerWidth * 0.5 && r.x > bx && r.y < 100) {
+                    best = icons[i]; bx = r.x;
+                }
+            }
+            if (!best) {
+                var els = document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="bell"]');
+                for (var i = 0; i < els.length; i++) {
+                    var r = els[i].getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0 && r.width < 80 && r.y < 100
+                        && r.x > window.innerWidth * 0.5) {
+                        best = els[i]; break;
+                    }
+                }
+            }
+            if (!best) return {ok: false};
+            var r = best.getBoundingClientRect();
+            return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2};
+        """)
+        if not info.get("ok"):
+            self.L("⚠ 未找到通知图标", "yellow")
+            return False
+        self._ac_hover_at(info["x"], info["y"])
+        time.sleep(2)
+        # 检查浮窗是否出现
+        overlay = self._js("return !!document.querySelector('[class*=\"semi-tabs-pane-motion-overlay\"],[class*=\"notice-overlay\"],[class*=\"notification-panel\"]')")
+        if overlay:
+            self.L("✓ 浮窗已打开", "white")
+        return overlay or True  # 即使没检测到 overlay 也继续尝试
+
+    def _cmt_click_tab_in_overlay(self, tab_name):
+        """在浮窗 overlay 内点击指定标签（如「评论」「赞」）"""
+        esc = tab_name.replace("\\", "\\\\").replace("'", "\\'")
+        info = self._cmt_find_visible(f"""
+            var overlay = document.querySelector('[class*="semi-tabs-pane-motion-overlay"],[class*="notice-overlay"],[class*="notification-panel"]');
+            if (!overlay) {{
+                var tabs = document.querySelectorAll('[class*="semi-tabs-tab"]');
+                if (tabs.length) overlay = tabs[0].closest('div');
+            }}
+            if (!overlay) {{
+                var tabs = document.querySelectorAll('[role="tablist"]');
+                if (tabs.length) overlay = tabs[0];
+            }}
+            if (!overlay) return {{ok: false}};
+            overlay.setAttribute('data-cmt-overlay', '1');
+            var kids = overlay.querySelectorAll('*');
+            for (var i = 0; i < kids.length; i++) {{
+                var t = (kids[i].textContent || '').trim();
+                if (t === '{esc}' || t.indexOf('{esc}') !== -1) {{
+                    var r = kids[i].getBoundingClientRect();
+                    if (r.width > 10 && r.height > 10) {{
+                        kids[i].setAttribute('data-cmt-tab', '1');
+                        return {{ok: true, x: r.x + r.width/2, y: r.y + r.height/2, w: r.width, h: r.height}};
                     }}
                 }}
             }}
-            return false;
+            return {{ok: false}};
         """)
+        if not info.get("ok"):
+            self.L(f"⚠ 未找到浮窗内「{tab_name}」标签", "yellow")
+            return False
+        self._ac_click_at(info["x"], info["y"])
+        time.sleep(3)
+        return True
 
-    def _clk_rightmost_icon(self):
-        """点击 header 区域最右侧图标（通知铃铛）"""
-        return self._js("""
-            var all=document.querySelectorAll('header *');
-            var best=null,bx=-1;
-            for(var i=0;i<all.length;i++){
-                var r=all[i].getBoundingClientRect();
-                if(r.width>=16&&r.width<=60&&r.height>=16&&r.height<=60&&r.x>window.innerWidth*.55&&r.x>bx&&r.y<120)
-                    {{best=all[i];bx=r.x;}}
+    def _cmt_click_first_item(self):
+        """在消息列表里点击第一条评论"""
+        info = self._cmt_find_visible("""
+            var items = document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"]');
+            for (var i = 0; i < items.length; i++) {
+                var r = items[i].getBoundingClientRect();
+                if (r.width > 100 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
+                    items[i].setAttribute('data-cmt-first', '1');
+                    return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2, text: (items[i].textContent||'').trim().substring(0, 120)};
+                }
             }
-            if(!best){{
-                var icons=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="bell"],[class*="-msg"],[class*="message-icon"]');
-                for(var i=0;i<icons.length;i++){{
-                    var r=icons[i].getBoundingClientRect();
-                    if(r.width>0&&r.height>0&&r.width<80){{best=icons[i];break;}}
+            return {ok: false};
+        """)
+        if not info.get("ok"):
+            self.L("⚠ 未找到评论项", "yellow")
+            return False, ""
+        self._ac_click_at(info["x"], info["y"])
+        time.sleep(3)
+        return True, info.get("text", "")
+
+    def _cmt_click_text_button(self, text):
+        """在当前视图中点击显示指定文字的按钮（用于「回复」「发送」等）"""
+        esc = text.replace("\\", "\\\\").replace("'", "\\'")
+        info = self._cmt_find_visible(f"""
+            var els = document.querySelectorAll('span,button,div,a,li');
+            for (var i = 0; i < els.length; i++) {{
+                var t = (els[i].textContent || '').trim();
+                if (t === '{esc}') {{
+                    var r = els[i].getBoundingClientRect();
+                    if (r.width > 8 && r.width < 300 && r.height > 8 && r.height < 120) {{
+                        els[i].setAttribute('data-cmt-btn', '1');
+                        return {{ok: true, x: r.x + r.width/2, y: r.y + r.height/2}};
+                    }}
                 }}
             }}
-            if(best){{try{{best.click()}}catch(e){{best.dispatchEvent(new MouseEvent('click',{{bubbles:true}}))}}return true;}}
-            return false;
+            return {{ok: false}};
         """)
+        if not info.get("ok"):
+            return False
+        self._ac_click_at(info["x"], info["y"])
+        time.sleep(1.5)
+        return True
 
-    def _get_first_comment_text(self):
-        return self._js("""
-            var items=document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"]');
-            for(var i=0;i<items.length;i++){
-                var r=items[i].getBoundingClientRect();
-                if(r.width>100&&r.height>20&&r.y>60){
-                    var t=(items[i].textContent||'').trim();
-                    if(t.length>3)return t.substring(0,120);
+    def _cmt_focus_and_type(self, text):
+        """找到输入框并点击聚焦"""
+        info = self._cmt_find_visible("""
+            var edts = document.querySelectorAll('[contenteditable="true"]');
+            for (var i = 0; i < edts.length; i++) {
+                var r = edts[i].getBoundingClientRect();
+                if (r.height > 20 && r.height < 300 && r.width > 100 && r.top > window.innerHeight * 0.25) {
+                    edts[i].setAttribute('data-cmt-input', '1');
+                    return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2};
                 }
             }
-            return '';
-        """)
-
-    def _clk_first_comment_item(self):
-        return self._js("""
-            var items=document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"]');
-            for(var i=0;i<items.length;i++){
-                var r=items[i].getBoundingClientRect();
-                if(r.width>100&&r.height>20&&r.y>60){
-                    try{{items[i].click()}}catch(e){{items[i].dispatchEvent(new MouseEvent('click',{{bubbles:true}}))}}
-                    return true;
+            var ins = document.querySelectorAll('textarea,input[type="text"]');
+            for (var i = 0; i < ins.length; i++) {
+                var r = ins[i].getBoundingClientRect();
+                if (r.height > 20 && r.width > 100) {
+                    ins[i].setAttribute('data-cmt-input', '1');
+                    return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2};
                 }
             }
-            return false;
+            return {ok: false};
         """)
-
-    def _clk_reply_btn(self):
-        return self._js("""
-            var els=document.querySelectorAll('span,button,div,a');
-            for(var i=0;i<els.length;i++){
-                if((els[i].textContent||'').trim()==='回复'){
-                    var r=els[i].getBoundingClientRect();
-                    if(r.width>10&&r.width<200&&r.height>10){
-                        try{{els[i].click()}}catch(e){{els[i].dispatchEvent(new MouseEvent('click',{{bubbles:true}}))}}
-                        return true;
-                    }
-                }
-            }
-            return false;
-        """)
-
-    def _focus_input(self):
-        return self._js("""
-            var edts=document.querySelectorAll('[contenteditable="true"]');
-            for(var i=0;i<edts.length;i++){
-                var r=edts[i].getBoundingClientRect();
-                if(r.height>20&&r.height<200&&r.width>100&&r.top>window.innerHeight*.3)
-                    {{edts[i].focus();edts[i].click();return true;}}
-            }
-            var ins=document.querySelectorAll('textarea,input[type="text"]');
-            for(var i=0;i<ins.length;i++){
-                var r=ins[i].getBoundingClientRect();
-                if(r.height>20&&r.width>100){{ins[i].focus();ins[i].click();return true;}}
-            }
-            return false;
-        """)
-
-    def _clk_send_btn(self):
-        return self._js("""
-            var els=document.querySelectorAll('span,button,div');
-            for(var i=0;i<els.length;i++){
-                if((els[i].textContent||'').trim()==='发送'){
-                    var r=els[i].getBoundingClientRect();
-                    if(r.width>10&&r.width<200){
-                        try{{els[i].click()}}catch(e){{els[i].dispatchEvent(new MouseEvent('click',{{bubbles:true}}))}}
-                        return true;
-                    }
-                }
-            }
-            return false;
-        """)
+        if not info.get("ok"):
+            return False
+        self._ac_click_at(info["x"], info["y"])
+        time.sleep(0.5)
+        # 粘贴文本
+        try:
+            edt = self._d.find_element(By.CSS_SELECTOR, '[data-cmt-input="1"]')
+            self._paste(text, edt)
+        except:
+            self._paste(text)
+        time.sleep(1)
+        return True
 
     def _cmt_cycle(self):
-        """一轮评论检测+回复（纯 JS）"""
+        """一轮评论检测+回复（JS坐标 + ActionChains真实鼠标点击）"""
         try:
             self._switch_tab(TAB_HOME)
-            if "www.douyin.com" not in (self._d.current_url or ""):
-                self._d.get(DY_HOME)
-                time.sleep(3)
+            if "creator.douyin.com" not in (self._d.current_url or ""):
+                self._d.get(CMT_URL)
+                self.L("⏳ 加载创作者中心...", "white")
+                time.sleep(5)
 
-            # 1. 通知铃铛
-            if not self._clk_rightmost_icon():
+            # 1. hover 通知图标 → 浮窗打开
+            self.L("🔔 悬停通知图标...", "white")
+            if not self._cmt_hover_notification():
                 return
-            time.sleep(2.5)
+            time.sleep(1)
 
-            # 2. 全部消息
-            ok = self._clk_text("全部消息") or self._clk_text("查看全部")
-            if not ok:
-                self._d.get(DY_HOME); time.sleep(2); return
-            time.sleep(3)
+            # 2. 点「评论」tab
+            self.L("📋 点击评论标签...", "white")
+            if not self._cmt_click_tab_in_overlay("评论"):
+                self.L("⚠ 点击评论失败，尝试「互动」...", "yellow")
+                if not self._cmt_click_tab_in_overlay("互动"):
+                    self._d.get(CMT_URL); time.sleep(3); return
 
-            # 3. 评论标签
-            if not self._clk_text("评论"):
-                self._d.get(DY_HOME); time.sleep(2); return
-            time.sleep(2)
+            # 3. 获取第一条评论
+            ok, ct = self._cmt_click_first_item()
+            if not ok or not ct:
+                self._d.get(CMT_URL); time.sleep(3); return
 
-            # 4. 获取第一条评论内容
-            ct = self._get_first_comment_text()
-            if not ct: return
             fk = ct[:40]
             rec = load_replied(self.name)
-            if fk in rec.get("cmt_fps", []): return
+            if fk in rec.get("cmt_fps", []):
+                self._d.get(CMT_URL); time.sleep(3); return
 
             self.L(f'💬 新评论: "{ct}"', "white")
 
-            # 5. 点击评论项
-            if not self._clk_first_comment_item():
-                self._d.get(DY_HOME); time.sleep(2); return
-            time.sleep(3)
+            # 4. 点「回复」
+            if not self._cmt_click_text_button("回复"):
+                self._d.get(CMT_URL); time.sleep(3); return
 
-            # 6. 回复按钮
-            if not self._clk_reply_btn():
-                self._d.get(DY_HOME); time.sleep(2); return
-            time.sleep(2)
+            # 5. 输入 → 发送
+            if not self._cmt_focus_and_type(self.cmt_text):
+                self.L("⚠ 未找到输入框", "yellow")
+                self._d.get(CMT_URL); time.sleep(3); return
 
-            # 7. 输入
-            if not self._focus_input():
-                self._d.get(DY_HOME); time.sleep(2); return
-            time.sleep(0.5)
-            try:
-                edt = self._d.find_elements(By.CSS_SELECTOR, '[contenteditable="true"]')
-                if edt:
-                    self._paste(self.cmt_text, edt[0])
-                else:
-                    self._js(f"var e=document.querySelector('[contenteditable=\"true\"]');if(e){{e.textContent='{self.cmt_text}';e.dispatchEvent(new Event('input',{{bubbles:true}}));}}")
-                time.sleep(1)
-            except Exception as ex:
-                self.L(f"⚠ 评论输入异常: {ex}", "yellow")
-
-            # 8. 发送
-            ok = self._clk_send_btn()
-            time.sleep(2)
+            ok = self._cmt_click_text_button("发送")
             if ok:
                 rec["cmt_fps"].append(fk)
                 save_replied(self.name, rec)
@@ -438,14 +487,14 @@ class AccountWorker(QThread):
             else:
                 self.L("⚠ 未找到发送按钮", "yellow")
 
-            self._d.get(DY_HOME)
+            self._d.get(CMT_URL)
             time.sleep(3)
 
         except WebDriverException:
             pass
         except Exception as e:
             self.L(f"⚠ 评论异常: {e}", "yellow")
-            try: self._d.get(DY_HOME)
+            try: self._d.get(CMT_URL)
             except: pass
 
     # ═══════════ 分时主循环 ═══════════
