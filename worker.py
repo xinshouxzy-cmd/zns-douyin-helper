@@ -125,14 +125,31 @@ class AccountWorker(QThread):
                 except:
                     pass
             try:
-                cache_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", "win64")
-                cached = os.path.isdir(cache_dir) and os.listdir(cache_dir)
-                if cached:
-                    self.L("驱动已就绪", "white")
+                cache_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver")
+                # 优先检查本机平台的缓存目录
+                import platform as _pf
+                _sys_map = {"Windows": "win64", "Darwin": "mac64", "Linux": "linux64"}
+                _sys_key = _pf.system()
+                _pf_dir = os.path.join(cache_dir, _sys_map.get(_sys_key, "win64"))
+                # 如果指定系统目录不存在，回退查找任意平台子目录
+                if not os.path.isdir(_pf_dir) or not os.listdir(_pf_dir):
+                    for _sub in os.listdir(cache_dir) if os.path.isdir(cache_dir) else []:
+                        _p = os.path.join(cache_dir, _sub)
+                        if os.path.isdir(_p) and os.listdir(_p):
+                            _pf_dir = _p; break
+                cached_versions = sorted(os.listdir(_pf_dir), reverse=True) if os.path.isdir(_pf_dir) else []
+                if cached_versions:
+                    _ver_dir = os.path.join(_pf_dir, cached_versions[0])
+                    _binaries = [f for f in os.listdir(_ver_dir) if f.startswith("chromedriver")]
+                    if _binaries:
+                        driver_path = os.path.join(_ver_dir, _binaries[0])
+                        os.chmod(driver_path, 0o755)  # 确保可执行
+                        self.L("驱动已就绪（离线）", "white")
+                    else:
+                        raise FileNotFoundError("缓存目录中未找到 chromedriver")
                 else:
                     self.L("⏳ 首次运行，正在下载浏览器驱动（约10MB）...", "yellow")
-                driver_path = ChromeDriverManager().install()
-                if not cached:
+                    driver_path = ChromeDriverManager().install()
                     self.L("✓ 驱动下载完成", "green")
             except Exception as e:
                 msg2 = str(e)
