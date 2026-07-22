@@ -2,6 +2,7 @@
 """
 遵农商·抖音客服助手 — 工作线程
 单浏览器双标签页：首页(评论) + 私信页(私信)
+私信逻辑完全基于 v42.1 成熟方案
 """
 
 import os, sys, json, time, re, subprocess, traceback
@@ -11,6 +12,7 @@ from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import (
@@ -24,7 +26,7 @@ REPLIED_DIR = os.path.join(BASE_DIR, "replied_records")
 os.makedirs(REPLIED_DIR, exist_ok=True)
 
 DY_HOME = "https://www.douyin.com"
-PM_URL = "https://creator.douyin.com/creator-micro/chat?isPopup=1"
+PM_URL = "https://www.douyin.com/chat?isPopup=1"   # ← v42.1 的正确私信URL
 DEFAULT_COORDS = os.path.join(BASE_DIR, "comment_data", "positions.json")
 
 TAB_HOME = 0  # 首页 tab 索引（评论用）
@@ -85,16 +87,16 @@ class AccountWorker(QThread):
         self._cmt_n = 0
         self._coords = None
         self._login_ok = Event()
+        self._last_reply_time = {}  # 防重复回复
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
 
     def stop(self):
         self._run = False
-        self._login_ok.set()  # 防止卡在等待登录
+        self._login_ok.set()
 
     def confirm_login(self):
-        """用户在 GUI 点击「确认已登录」"""
         self._login_ok.set()
 
     # ── 浏览器启动 ──
@@ -104,19 +106,19 @@ class AccountWorker(QThread):
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
         opt.add_experimental_option("useAutomationExtension", False)
+        opt.add_experimental_option("detach", True)
         if sys.platform == "darwin":
             opt.add_argument("--use-mock-keychain")
 
         d = webdriver.Chrome(service=Service(find_chromedriver()), options=opt)
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
-
+        d.set_window_size(500, 800)
         d.get(DY_HOME)
         time.sleep(5)
         return d
 
     def _switch_tab(self, idx):
-        """切换到指定标签页"""
         try:
             handles = self._d.window_handles
             if idx < len(handles):
@@ -128,79 +130,173 @@ class AccountWorker(QThread):
         """在新标签页打开私信页面"""
         self._d.execute_script(f"window.open('{PM_URL}','_blank');")
         time.sleep(4)
-        # 切到私信 tab 检查一下加载
         self._switch_tab(TAB_PM)
-        time.sleep(2)
-        # 关闭弹窗
-        try:
-            close_btns = self._d.find_elements(By.XPATH,
-                '//*[contains(@class,"close") or contains(text(),"关闭")]')
-            for b in close_btns[:3]:
-                try: b.click()
-                except: pass
-        except: pass
+        time.sleep(3)
+        self.L("等待10秒后刷新私信页面...", "white")
+        time.sleep(10)
+        self._d.refresh()
+        time.sleep(3)
 
-    # ── 私信回复 ──
+    # ── 辅助方法 ──
+    def _js(self, code):
+        try:
+            return self._d.execute_script(code)
+        except:
+            return None
+
+    def _clk(self, x, y):
+        try:
+            self._d.execute_script(f"document.elementFromPoint({x},{y}).click();")
+        except:
+            pass
+
+    def _paste(self, text, elem=None):
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"))
+            if elem:
+                elem.send_keys(Keys.COMMAND, 'v')
+            else:
+                ActionChains(self._d).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform()
+        else:
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+            except:
+                pass
+            if elem:
+                elem.send_keys(Keys.CONTROL, 'v')
+            else:
+                ActionChains(self._d).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+
+    def _clean_name(self, raw):
+        """去掉时间后缀"""
+        return re.sub(
+            r'(刚刚|\d+分钟前|\d+小时前|昨天|\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日|\d{2}/\d{2})$',
+            '', raw
+        ).strip()
+
+    # ── 私信回复（基于 v42.1 成熟逻辑）──
+    def _enter_stranger(self):
+        """点击陌生人入口 → True=已进入"""
+        found = self._js("""
+            let row = document.querySelector('[class*="conversationStrangerBoxrowArea2"]');
+            if (!row) row = document.querySelector('[class*="StrangerBoxwrapper"]');
+            if (row) {
+                row.setAttribute('data-stranger-click', '1');
+                return true;
+            }
+            return false;
+        """)
+        if not found:
+            return False
+        try:
+            el = self._d.find_element(By.CSS_SELECTOR, '[data-stranger-click="1"]')
+            ActionChains(self._d).move_to_element(el).click().perform()
+            time.sleep(4)
+            return True
+        except:
+            return False
+
+    def _back_to_list(self):
+        """返回消息列表"""
+        self._js("""
+            let back=document.querySelector('[class*="back"], [class*="return"], [class*="arrow"]');
+            if(back){back.closest('div,button,span').click();return;}
+            let tabs=document.querySelectorAll('[class*="tab"] span, [class*="nav"] div');
+            for(let t of tabs){if(/消息/.test(t.textContent)){t.click();return;}}
+        """)
+
+    def _send_pm_reply(self, text):
+        """在私信输入框输入并发送"""
+        found = self._js("""
+            let inp = document.querySelector('[class*="zone-container"][class*="editor-kit-container"]');
+            if (inp) { inp.focus(); inp.click(); return true; }
+            let all=document.querySelectorAll('div[contenteditable="true"], textarea');
+            for(let el of all){
+                let r=el.getBoundingClientRect();
+                if(r.height>20&&r.height<200&&r.top>window.innerHeight*0.35){inp=el;break;}
+            }
+            if(!inp)inp=document.querySelector('div[data-placeholder]')||document.querySelector('div[class*="rich-input"]');
+            if(inp){inp.focus();inp.click();}
+            return !!inp;
+        """)
+        if not found:
+            return False
+        time.sleep(0.3)
+        actions = ActionChains(self._d)
+        for ch in text:
+            actions.send_keys(ch)
+        actions.pause(0.3).send_keys(Keys.ENTER).perform()
+        return True
+
     def _pm_cycle(self):
-        """一轮私信检测+回复（在 tab 1 执行）"""
+        """一轮私信检测+回复（在 tab 1 私信页执行）- v42.1 逻辑"""
         try:
             self._switch_tab(TAB_PM)
 
-            # 点击「陌生人」
-            try:
-                xp = '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[last()-1]/div/span'
-                tabs = self._d.find_elements(By.XPATH, xp)
-                if tabs:
-                    tabs[-1].click()
-                    time.sleep(0.8)
-            except:
+            # 验证是否还在陌生人列表内
+            still_in = self._js("""
+                let list = document.querySelector('[class*="conversationStrangerConversationListlist"]');
+                if (!list) return false;
+                let items = list.querySelectorAll('[class*="conversationConversationItemwrapper"]');
+                return items.length > 0;
+            """)
+
+            if not still_in:
+                # 尝试进入陌生人列表
+                if self._enter_stranger():
+                    self.L("已进入陌生人消息", "white")
+                    self._last_reply_time = {}
                 return
 
-            # 获取最新私信
-            try:
-                ctn = self._d.find_element(By.XPATH,
-                    '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[2]/div/div/div/div/div[1]/div/div[2]')
-                html = ctn.get_attribute("outerHTML")
-                m = re.search(r'data-id="([^"]+)"', html)
-                cid = m.group(1) if m else "?"
-                txt = (ctn.text or "")[:60].replace("\n", " ")
-            except:
+            # 在陌生人列表内，找第一个陌生人并回复
+            clicked = self._js("""
+                let list = document.querySelector('[class*="conversationStrangerConversationListlist"]');
+                if (!list) return '';
+                let items = list.querySelectorAll('[class*="conversationConversationItemwrapper"]');
+                if (items.length === 0) return '';
+                let first = items[0];
+                let title = first.querySelector('[class*="conversationConversationItemtitle"]');
+                let name = title ? title.textContent.trim() : '';
+                first.focus();
+                ['mousedown','mouseup','click'].forEach(e =>
+                    first.dispatchEvent(new MouseEvent(e,{bubbles:true,cancelable:true}))
+                );
+                return name;
+            """)
+
+            if not clicked:
                 return
 
+            first_name = self._clean_name(clicked)
+            if not first_name:
+                return
+
+            # 防重复：同一人30秒内不重复回复
+            now = time.time()
+            if first_name in self._last_reply_time and now - self._last_reply_time[first_name] < 30:
+                return
+
+            # 检查是否已回复过
             rec = load_replied(self.name)
-            if cid in rec.get("pm_fps", []):
+            if first_name in rec.get("pm_fps", []):
                 return
 
-            self.L(f"💬 新私信: \"{txt}\"", "white")
+            self.L(f'💬 新私信: "{first_name}"', "white")
+            time.sleep(2)
 
-            # 输入框
-            inp = self._d.find_element(By.XPATH,
-                '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[3]/div/div[2]/div/div/div')
-            inp.click()
-            time.sleep(0.2)
-            self._paste(self.pm_text, inp)
-            time.sleep(0.5)
+            if self.pm_text and self._send_pm_reply(self.pm_text):
+                self._last_reply_time[first_name] = time.time()
+                rec["pm_fps"].append(first_name)
+                save_replied(self.name, rec)
+                self._pm_n += 1
+                self.pm_cnt.emit(self.name, self._pm_n)
+                self.L(f"✅ 私信已回复: {first_name} | 累计: {self._pm_n}", "green")
+            else:
+                self.L(f"⚠ 私信回复失败: {first_name}", "yellow")
 
-            # 发送
-            btn = self._d.find_element(By.XPATH,
-                '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[2]/div/div/div/div/div/div[3]/div/div[3]/div')
-            btn.click()
-            time.sleep(0.5)
-
-            rec["pm_fps"].append(cid)
-            save_replied(self.name, rec)
-            self._pm_n += 1
-            self.pm_cnt.emit(self.name, self._pm_n)
-            self.L(f"✅ 私信已回复 | 累计: {self._pm_n}", "green")
-
-            # 返回列表
-            try:
-                bk = self._d.find_element(By.XPATH,
-                    '//*[@id="douyin-right-menu"]/div[1]/div[2]/div[1]/div/div[1]/div/div[1]/div/div/span')
-                bk.click()
-                time.sleep(0.5)
-            except:
-                pass
+            self._back_to_list()
+            time.sleep(1)
 
         except WebDriverException:
             pass
@@ -222,36 +318,6 @@ class AccountWorker(QThread):
             self.L(f"⚠️ 坐标加载失败: {e}", "yellow")
             self.cmt_on = False
             return False
-
-    def _clk(self, x, y):
-        try:
-            self._d.execute_script(f"document.elementFromPoint({x},{y}).click();")
-        except:
-            pass
-
-    def _js(self, code):
-        try:
-            return self._d.execute_script(code)
-        except:
-            return None
-
-    def _paste(self, text, elem=None):
-        """跨平台粘贴文本"""
-        if sys.platform == "darwin":
-            subprocess.run(["pbcopy"], input=text.encode("utf-8"))
-            if elem:
-                elem.send_keys(Keys.COMMAND, 'v')
-            else:
-                from selenium.webdriver.common.action_chains import ActionChains
-                ActionChains(self._d).key_down(Keys.COMMAND).send_keys('v').key_up(Keys.COMMAND).perform()
-        else:
-            import pyperclip
-            pyperclip.copy(text)
-            if elem:
-                elem.send_keys(Keys.CONTROL, 'v')
-            else:
-                from selenium.webdriver.common.action_chains import ActionChains
-                ActionChains(self._d).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
 
     def _cmt_cycle(self):
         """一轮评论检测+回复（在 tab 0 首页执行）"""
@@ -380,8 +446,6 @@ class AccountWorker(QThread):
             # 打开浏览器（首页 tab）
             self._d = self._start_browser()
             self.status.emit(self.name, "📱 请扫码登录后点击确认")
-
-            # 发信号让 GUI 显示「确认已登录」按钮
             self.waiting_login.emit(self.name)
             self.L("📱 请扫码登录，完成后点击「确认已登录」", "white")
 
@@ -400,7 +464,7 @@ class AccountWorker(QThread):
             self._switch_tab(TAB_HOME)
 
             self.status.emit(self.name, "已就绪，开始监控")
-            self.L(f"✅ 就绪 | 首页Tab(评论) + 私信Tab(私信)", "green")
+            self.L("✅ 就绪 | 首页Tab(评论) + 私信Tab(私信)", "green")
 
             pt = 0
             ct = 0
