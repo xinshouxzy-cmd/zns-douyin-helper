@@ -343,8 +343,33 @@ class AccountWorker(QThread):
         except:
             return None
 
+    def _cmt_load_positions(self):
+        """加载录制的坐标文件，按当前视口缩放"""
+        pos_file = os.path.join(BASE_DIR, "comment_data", "positions.json")
+        if not os.path.exists(pos_file):
+            self.L("⚠ 未找到坐标文件 comment_data/positions.json", "yellow")
+            return None
+        try:
+            with open(pos_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            vp = self._d.execute_script("return {w: window.innerWidth, h: window.innerHeight};")
+            vw, vh = vp["w"], vp["h"]
+            positions = {}
+            for name, p in data.items():
+                if name.startswith("_"):
+                    continue
+                if "x_pct" in p and p["x_pct"] > 0:
+                    positions[name] = {"x": int(p["x_pct"] * vw), "y": int(p["y_pct"] * vh)}
+                else:
+                    # 兼容旧格式：标清录制分辨率 1084x705
+                    positions[name] = {"x": int(p.get("x", 0) * vw / 1084), "y": int(p.get("y", 0) * vh / 705)}
+            return positions
+        except Exception as e:
+            self.L(f"⚠ 坐标文件读取失败: {e}", "yellow")
+            return None
+
     def _cmt_cycle(self):
-        """一轮评论检测+回复（Selenium ActionChains + 全页面JS动态找坐标）"""
+        """一轮评论检测+回复（坐标优先 → JS动态兜底）"""
         try:
             self._switch_tab(TAB_HOME)
             if "www.douyin.com" not in (self._d.current_url or ""):
@@ -352,79 +377,87 @@ class AccountWorker(QThread):
                 self.L("⏳ 加载抖音首页...", "white")
                 time.sleep(5)
 
-            # 1. 找并点击通知图标
+            # 加载录制的坐标（每次运行时做一次缩放）
+            pos = self._cmt_load_positions()
+
+            # ====== 1. 点击通知图标（坐标优先） ======
             self.L("🔔 点击通知...", "white")
-            found = self._cmt_js("""
-                var icons = document.querySelectorAll('header [class*="icon"]');
-                var best = null, bx = -1;
-                for (var i = 0; i < icons.length; i++) {
-                    var r = icons[i].getBoundingClientRect();
-                    if (r.width >= 16 && r.width <= 70 && r.height >= 16 && r.height <= 70
-                        && r.x > window.innerWidth * 0.5 && r.x > bx && r.y < 100) {
-                        best = icons[i]; bx = r.x;
-                    }
-                }
-                if (!best) {
-                    var els = document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="bell"]');
-                    for (var i = 0; i < els.length; i++) {
-                        var r = els[i].getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0 && r.width < 80 && r.y < 100 && r.x > window.innerWidth * 0.5) {
-                            best = els[i]; break;
+            p = pos.get("1_通知图标") if pos else None
+            clicked = False
+            if p:
+                clicked = self._cmt_click_at(p["x"], p["y"])
+            if not clicked:
+                # JS 兜底
+                found = self._cmt_js("""
+                    var icons = document.querySelectorAll('header [class*="icon"]');
+                    var best = null, bx = -1;
+                    for (var i = 0; i < icons.length; i++) {
+                        var r = icons[i].getBoundingClientRect();
+                        if (r.width >= 16 && r.width <= 70 && r.height >= 16 && r.height <= 70
+                            && r.x > window.innerWidth * 0.5 && r.x > bx && r.y < 100) {
+                            best = icons[i]; bx = r.x;
                         }
                     }
-                }
-                if (!best) return null;
-                var r = best.getBoundingClientRect();
-                return {x: r.x + r.width/2, y: r.y + r.height/2};
-            """)
-            if not found:
-                self.L("⚠ 未找到通知图标", "yellow")
-                return
-            self._cmt_click_at(found["x"], found["y"])
+                    if (!best) return null;
+                    var r = best.getBoundingClientRect();
+                    return {x: r.x + r.width/2, y: r.y + r.height/2};
+                """)
+                if found:
+                    self._cmt_click_at(found["x"], found["y"])
+                else:
+                    self.L("⚠ 未找到通知图标", "yellow")
+                    return
             time.sleep(3)
 
-            # 2. 点击「全部消息」
+            # ====== 2. 点击「全部消息」（坐标优先） ======
             self.L("📋 点击「全部消息」...", "white")
-            found = self._cmt_js("""
-                var els = document.querySelectorAll('span,div,button,a');
-                for (var i = 0; i < els.length; i++) {
-                    var t = (els[i].textContent || '').trim();
-                    if (t.indexOf('全部消息') >= 0 || t.indexOf('查看全部') >= 0) {
-                        var r = els[i].getBoundingClientRect();
-                        if (r.width > 30 && r.height > 10) {
-                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+            p = pos.get("2_全部消息") if pos else None
+            if p:
+                self._cmt_click_at(p["x"], p["y"])
+            else:
+                found = self._cmt_js("""
+                    var els = document.querySelectorAll('span,div,button,a');
+                    for (var i = 0; i < els.length; i++) {
+                        var t = (els[i].textContent || '').trim();
+                        if (t.indexOf('全部消息') >= 0 || t.indexOf('查看全部') >= 0) {
+                            var r = els[i].getBoundingClientRect();
+                            if (r.width > 30 && r.height > 10)
+                                return {x: r.x + r.width/2, y: r.y + r.height/2};
                         }
                     }
-                }
-                return null;
-            """)
-            if found:
-                self._cmt_click_at(found["x"], found["y"])
-                time.sleep(1.5)
+                    return null;
+                """)
+                if found:
+                    self._cmt_click_at(found["x"], found["y"])
+            time.sleep(1.5)
 
-            # 3. 动态找「评论」筛选并点击
+            # ====== 3. 点击「评论」筛选（坐标优先 → JS兜底） ======
             self.L("💬 找「评论」筛选...", "white")
+            p = pos.get("3_评论筛选") if pos else None
             found = self._cmt_js("""
                 var all = document.querySelectorAll('span, div, a, button');
                 for (var i = 0; i < all.length; i++) {
                     var t = (all[i].textContent || '').trim();
                     if (t === '评论') {
                         var r = all[i].getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0 && r.width < 200) {
+                        if (r.width > 0 && r.height > 0 && r.width < 200)
                             return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
-                        }
                     }
                 }
                 return null;
             """)
-            if not found:
+            if found:
+                self.L(f"  JS找到「评论」@ ({found['x']}, {found['y']})", "white")
+                self._cmt_click_at(found["x"], found["y"])
+            elif p:
+                self.L(f"  用录制坐标兜底 ({p['x']}, {p['y']})", "white")
+                self._cmt_click_at(p["x"], p["y"])
+            else:
                 self.L("⚠ 未找到「评论」标签", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
-            self.L(f"  点击「评论」@ ({found['x']}, {found['y']})", "white")
-            self._cmt_click_at(found["x"], found["y"])
             time.sleep(2)
 
-            # 4. 提取第一条评论
+            # ====== 4. 提取第一条评论 ======
             self.L("🔍 提取第一条评论...", "white")
             ct = self._cmt_js("""
                 var items = document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"],[class*="list-item"],[class*="comment-item"]');
@@ -444,12 +477,12 @@ class AccountWorker(QThread):
             fk = ct[:40]
             rec = load_replied(self.name)
             if fk in rec.get("cmt_fps", []):
-                self.L(f"⏭ 已回复过，跳过", "white")
+                self.L("⏭ 已回复过，跳过", "white")
                 self._d.get(DY_HOME); time.sleep(3); return
 
             self.L(f'💬 新评论: "{ct[:60]}"', "white")
 
-            # 5. 点击评论项
+            # ====== 5. 点击评论项 ======
             info = self._cmt_js("""
                 var el = document.querySelector('[data-cmt-first="1"]');
                 if (!el) return null;
@@ -461,7 +494,7 @@ class AccountWorker(QThread):
             self._cmt_click_at(info["x"], info["y"])
             time.sleep(3)
 
-            # 6. 找「回复」按钮并点击（多候选验证）
+            # ====== 6. 找「回复」按钮（JS候选 + 验证） ======
             self.L("✏️ 找「回复」按钮...", "white")
             candidates = self._cmt_js("""
                 var results = [];
@@ -478,7 +511,12 @@ class AccountWorker(QThread):
                 return results;
             """)
             reply_ok = False
-            for c in (candidates or []):
+            # 先尝试 JS 候选，再用录制坐标兜底
+            all_candidates = list(candidates or [])
+            p_reply = pos.get("5_回复按钮") if pos else None
+            if p_reply and not all_candidates:
+                all_candidates.append(p_reply)
+            for c in all_candidates:
                 self._cmt_click_at(c["x"], c["y"])
                 time.sleep(1.5)
                 v = self._cmt_js("""
@@ -500,7 +538,7 @@ class AccountWorker(QThread):
                 self.L("⚠ 未找到有效回复按钮", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
-            # 7. 输入回复
+            # ====== 7. 输入回复 ======
             info = self._cmt_js("""
                 var el = document.querySelector('[contenteditable="true"]');
                 if (!el) return null;
@@ -521,22 +559,21 @@ class AccountWorker(QThread):
                 self._paste(self.cmt_text)
             time.sleep(1)
 
-            # 8. 找「发送」按钮并点击
-            info = self._cmt_js("""
+            # ====== 8. 发送 ======
+            sent_info = self._cmt_js("""
                 var all = document.querySelectorAll('span, button, div');
                 for (var i = 0; i < all.length; i++) {
                     if ((all[i].textContent || '').trim() === '发送') {
                         var r = all[i].getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0) {
+                        if (r.width > 0 && r.height > 0)
                             return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
-                        }
                     }
                 }
                 return null;
             """)
-            if info:
+            if sent_info:
                 self.L("📤 点击发送...", "white")
-                self._cmt_click_at(info["x"], info["y"])
+                self._cmt_click_at(sent_info["x"], sent_info["y"])
                 time.sleep(2)
 
             rec["cmt_fps"].append(fk)
