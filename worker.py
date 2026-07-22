@@ -110,6 +110,12 @@ class AccountWorker(QThread):
         bundled = get_bundled_chrome()
         if bundled:
             opt.binary_location = bundled
+            # 内置 Chrome → 用同目录下匹配的 chromedriver
+            driver_path = find_chromedriver()
+        else:
+            # 系统 Chrome → webdriver_manager 自动下载匹配版本
+            from webdriver_manager.chrome import ChromeDriverManager
+            driver_path = ChromeDriverManager().install()
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -117,7 +123,7 @@ class AccountWorker(QThread):
         opt.add_experimental_option("detach", True)
         if sys.platform == "darwin":
             opt.add_argument("--use-mock-keychain")
-        d = webdriver.Chrome(service=Service(find_chromedriver()), options=opt)
+        d = webdriver.Chrome(service=Service(driver_path), options=opt)
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
         d.set_window_size(1100, 800)

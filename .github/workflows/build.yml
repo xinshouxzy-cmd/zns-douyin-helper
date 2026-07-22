@@ -33,31 +33,18 @@ jobs:
           "" | Out-File -FilePath replied_records\.gitkeep -Encoding UTF8
           "" | Out-File -FilePath chrome_profiles\.gitkeep -Encoding UTF8
 
-      - name: Download ChromeDriver
-        shell: pwsh
-        run: |
-          Write-Host "下载 ChromeDriver..."
-          $ver = (Invoke-RestMethod 'https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json').channels.Stable.version
-          Write-Host "版本: $ver"
-          Invoke-WebRequest "https://storage.googleapis.com/chrome-for-testing-public/$ver/win64/chromedriver-win64.zip" -OutFile "chromedriver.zip"
-          Expand-Archive "chromedriver.zip" -DestinationPath "." -Force
-          Move-Item "chromedriver-win64/chromedriver.exe" "chromedriver.exe" -Force
-          Remove-Item "chromedriver.zip" -Force
-          Remove-Item "chromedriver-win64" -Recurse -Force
-          Write-Host "ChromeDriver 就绪"
-
       - name: Build
         shell: pwsh
         run: |
           pyinstaller --onedir --windowed --name "遵农商_抖音客服助手" `
             --add-data "config.json;." `
             --add-data "worker.py;." `
-            --add-data "chromedriver.exe;." `
             --add-data "replied_records;replied_records" `
             --add-data "chrome_profiles;chrome_profiles" `
             --add-data "comment_data;comment_data" `
             --collect-all PyQt5 `
             --collect-all selenium `
+            --collect-all webdriver_manager `
             main.py
 
       - name: Add readme
