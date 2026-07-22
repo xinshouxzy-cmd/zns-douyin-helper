@@ -2,7 +2,7 @@
 """
 遵农商·抖音客服助手 — 工作线程
 双标签页：抖音首页(评论) + 私信页(私信)
-- 评论回复：JS 坐标检测 + ActionChains 真实鼠标点击（浮窗兼容）
+- 评论回复：CDP 鼠标事件（Playwright 同款底层）+ 全页面 JS 找坐标
 - 私信回复：基于 v42.1 成熟方案（不动）
 - 分时轮流：30s评论 → 20s私信 → 10s休息
 """
@@ -257,36 +257,44 @@ class AccountWorker(QThread):
         except Exception as e:
             self.L(f"⚠ 私信异常: {e}", "yellow")
 
-    # ═══════════ 评论回复（侦察兵方案：JS坐标 + 真实鼠标点击） ═══════════
+    # ═══════════ 评论回复（CDP 鼠标事件 = Playwright 同款底层） ═══════════
 
-    def _ac_click_at(self, x, y):
-        """在页面坐标 (x,y) 处执行真实鼠标点击"""
+    def _mouse_move(self, x, y):
+        """CDP 移动鼠标到视口坐标 (x,y) — 和 Playwright 一样的底层协议"""
         try:
-            body = self._d.find_element(By.TAG_NAME, 'body')
-            ActionChains(self._d).move_to_element_with_offset(body, int(x), int(y)).click().perform()
+            self._d.execute_cdp_cmd('Input.dispatchMouseEvent', {
+                'type': 'mouseMoved', 'x': int(x), 'y': int(y)
+            })
             return True
         except:
             return False
 
-    def _ac_hover_at(self, x, y):
-        """在页面坐标 (x,y) 处悬停"""
+    def _mouse_click(self, x, y):
+        """CDP 在视口坐标 (x,y) 处点击"""
         try:
-            body = self._d.find_element(By.TAG_NAME, 'body')
-            ActionChains(self._d).move_to_element_with_offset(body, int(x), int(y)).perform()
+            self._d.execute_cdp_cmd('Input.dispatchMouseEvent', {
+                'type': 'mousePressed', 'x': int(x), 'y': int(y),
+                'button': 'left', 'clickCount': 1
+            })
+            time.sleep(0.05)
+            self._d.execute_cdp_cmd('Input.dispatchMouseEvent', {
+                'type': 'mouseReleased', 'x': int(x), 'y': int(y),
+                'button': 'left', 'clickCount': 1
+            })
             return True
         except:
             return False
 
-    def _cmt_find_visible(self, js_code):
-        """用 JS 查找可见元素的坐标，返回 {x, y, w, h, ok}"""
+    def _cmt_find(self, js_code):
+        """执行 JS 查找，返回 dict（ok 表示是否找到）"""
         try:
             return self._d.execute_script(js_code) or {"ok": False}
         except:
             return {"ok": False}
 
     def _cmt_hover_notification(self):
-        """悬停在 header 右侧通知图标上 → 浮窗出现"""
-        info = self._cmt_find_visible("""
+        """CDP 悬停在 header 右侧通知图标上 → 浮窗出现"""
+        info = self._cmt_find("""
             var icons = document.querySelectorAll('header [class*="icon"]');
             var best = null, bx = -1;
             for (var i = 0; i < icons.length; i++) {
@@ -313,58 +321,57 @@ class AccountWorker(QThread):
         if not info.get("ok"):
             self.L("⚠ 未找到通知图标", "yellow")
             return False
-        self._ac_hover_at(info["x"], info["y"])
-        time.sleep(2)
-        # 检查浮窗是否出现
-        overlay = self._js("return !!document.querySelector('[class*=\"semi-tabs-pane-motion-overlay\"],[class*=\"notice-overlay\"],[class*=\"notification-panel\"]')")
-        if overlay:
-            self.L("✓ 浮窗已打开", "white")
-        return overlay or True  # 即使没检测到 overlay 也继续尝试
+        self.L(f"  悬停坐标: ({info['x']:.0f}, {info['y']:.0f})", "white")
+        self._mouse_move(info["x"], info["y"])
+        time.sleep(2.5)
+        return True
 
-    def _cmt_click_tab_in_overlay(self, tab_name):
-        """在浮窗 overlay 内点击指定标签（如「评论」「赞」）"""
+    def _cmt_click_tab(self, tab_name):
+        """全页面搜索文字匹配的 tab 并 CDP 点击（不依赖 overlay 容器）"""
         esc = tab_name.replace("\\", "\\\\").replace("'", "\\'")
-        info = self._cmt_find_visible(f"""
-            var overlay = document.querySelector('[class*="semi-tabs-pane-motion-overlay"],[class*="notice-overlay"],[class*="notification-panel"]');
-            if (!overlay) {{
-                var tabs = document.querySelectorAll('[class*="semi-tabs-tab"]');
-                if (tabs.length) overlay = tabs[0].closest('div');
-            }}
-            if (!overlay) {{
-                var tabs = document.querySelectorAll('[role="tablist"]');
-                if (tabs.length) overlay = tabs[0];
-            }}
-            if (!overlay) return {{ok: false}};
-            overlay.setAttribute('data-cmt-overlay', '1');
-            var kids = overlay.querySelectorAll('*');
-            for (var i = 0; i < kids.length; i++) {{
-                var t = (kids[i].textContent || '').trim();
-                if (t === '{esc}' || t.indexOf('{esc}') !== -1) {{
-                    var r = kids[i].getBoundingClientRect();
-                    if (r.width > 10 && r.height > 10) {{
-                        kids[i].setAttribute('data-cmt-tab', '1');
-                        return {{ok: true, x: r.x + r.width/2, y: r.y + r.height/2, w: r.width, h: r.height}};
+        info = self._cmt_find(f"""
+            var all = document.querySelectorAll('span,div,button,a,li');
+            var candidates = [];
+            for (var i = 0; i < all.length; i++) {{
+                var t = (all[i].textContent || '').trim();
+                if (t === '{esc}') {{
+                    var r = all[i].getBoundingClientRect();
+                    if (r.width > 20 && r.width < 250 && r.height > 10 && r.y > 40 && r.y < 200) {{
+                        candidates.push({{el: all[i], x: r.x + r.width/2, y: r.y + r.height/2, w: r.width}});
                     }}
                 }}
             }}
-            return {{ok: false}};
+            if (candidates.length === 0) return {{ok: false}};
+            // 优先选最宽的（真正的 tab 通常是几个文字+padding）
+            candidates.sort(function(a,b){{return b.w - a.w}});
+            candidates[0].el.setAttribute('data-cmt-tab', '1');
+            return {{ok: true, x: candidates[0].x, y: candidates[0].y}};
         """)
         if not info.get("ok"):
-            self.L(f"⚠ 未找到浮窗内「{tab_name}」标签", "yellow")
+            self.L(f"⚠ 未找到「{tab_name}」标签", "yellow")
             return False
-        self._ac_click_at(info["x"], info["y"])
+        self.L(f"  点击「{tab_name}」@ ({info['x']:.0f}, {info['y']:.0f})", "white")
+        self._mouse_click(info["x"], info["y"])
         time.sleep(3)
         return True
 
     def _cmt_click_first_item(self):
-        """在消息列表里点击第一条评论"""
-        info = self._cmt_find_visible("""
-            var items = document.querySelectorAll('[class*="message-item"],[class*="conversation-item"],[class*="msgItem"],[class*="notice-item"]');
-            for (var i = 0; i < items.length; i++) {
-                var r = items[i].getBoundingClientRect();
-                if (r.width > 100 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
-                    items[i].setAttribute('data-cmt-first', '1');
-                    return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2, text: (items[i].textContent||'').trim().substring(0, 120)};
+        """在浮窗内点击第一条评论项"""
+        info = self._cmt_find("""
+            var selectors = [
+                '[class*="message-item"]','[class*="conversation-item"]',
+                '[class*="msgItem"]','[class*="notice-item"]',
+                '[class*="list-item"]','[class*="comment-item"]'
+            ];
+            for (var s = 0; s < selectors.length; s++) {
+                var items = document.querySelectorAll(selectors[s]);
+                for (var i = 0; i < items.length; i++) {
+                    var r = items[i].getBoundingClientRect();
+                    if (r.width > 120 && r.height > 30 && r.y > 60 && r.y < window.innerHeight * 0.85) {
+                        items[i].setAttribute('data-cmt-first', '1');
+                        return {ok: true, x: r.x + r.width/2, y: r.y + r.height/2,
+                                text: (items[i].textContent||'').trim().substring(0, 120)};
+                    }
                 }
             }
             return {ok: false};
@@ -372,14 +379,14 @@ class AccountWorker(QThread):
         if not info.get("ok"):
             self.L("⚠ 未找到评论项", "yellow")
             return False, ""
-        self._ac_click_at(info["x"], info["y"])
+        self._mouse_click(info["x"], info["y"])
         time.sleep(3)
         return True, info.get("text", "")
 
     def _cmt_click_text_button(self, text):
-        """在当前视图中点击显示指定文字的按钮（用于「回复」「发送」等）"""
+        """全页面搜索文字按钮并 CDP 点击"""
         esc = text.replace("\\", "\\\\").replace("'", "\\'")
-        info = self._cmt_find_visible(f"""
+        info = self._cmt_find(f"""
             var els = document.querySelectorAll('span,button,div,a,li');
             for (var i = 0; i < els.length; i++) {{
                 var t = (els[i].textContent || '').trim();
@@ -395,13 +402,13 @@ class AccountWorker(QThread):
         """)
         if not info.get("ok"):
             return False
-        self._ac_click_at(info["x"], info["y"])
+        self._mouse_click(info["x"], info["y"])
         time.sleep(1.5)
         return True
 
     def _cmt_focus_and_type(self, text):
-        """找到输入框并点击聚焦"""
-        info = self._cmt_find_visible("""
+        """找到输入框并 CDP 点击聚焦"""
+        info = self._cmt_find("""
             var edts = document.querySelectorAll('[contenteditable="true"]');
             for (var i = 0; i < edts.length; i++) {
                 var r = edts[i].getBoundingClientRect();
@@ -422,9 +429,8 @@ class AccountWorker(QThread):
         """)
         if not info.get("ok"):
             return False
-        self._ac_click_at(info["x"], info["y"])
+        self._mouse_click(info["x"], info["y"])
         time.sleep(0.5)
-        # 粘贴文本
         try:
             edt = self._d.find_element(By.CSS_SELECTOR, '[data-cmt-input="1"]')
             self._paste(text, edt)
@@ -434,7 +440,7 @@ class AccountWorker(QThread):
         return True
 
     def _cmt_cycle(self):
-        """一轮评论检测+回复（JS坐标 + ActionChains真实鼠标点击）"""
+        """一轮评论检测+回复（CDP 鼠标事件 + 全页面 JS 找坐标）"""
         try:
             self._switch_tab(TAB_HOME)
             if "www.douyin.com" not in (self._d.current_url or ""):
@@ -442,20 +448,21 @@ class AccountWorker(QThread):
                 self.L("⏳ 加载抖音首页...", "white")
                 time.sleep(5)
 
-            # 1. hover 通知图标 → 浮窗打开
+            # 1. CDP hover 通知图标 → 浮窗打开
             self.L("🔔 悬停通知图标...", "white")
             if not self._cmt_hover_notification():
                 return
-            time.sleep(1)
 
-            # 2. 点「评论」tab
+            # 2. CDP 点击「评论」tab（全页面搜文字，不依赖 overlay class）
             self.L("📋 点击评论标签...", "white")
-            if not self._cmt_click_tab_in_overlay("评论"):
-                self.L("⚠ 点击评论失败，尝试「互动」...", "yellow")
-                if not self._cmt_click_tab_in_overlay("互动"):
-                    self._d.get(DY_HOME); time.sleep(3); return
+            if not self._cmt_click_tab("评论"):
+                self.L("⚠ 尝试「互动」标签...", "yellow")
+                if not self._cmt_click_tab("互动"):
+                    self.L("⚠ 尝试「通知」标签...", "yellow")
+                    if not self._cmt_click_tab("通知"):
+                        self._d.get(DY_HOME); time.sleep(3); return
 
-            # 3. 获取第一条评论
+            # 3. 点击第一条评论
             ok, ct = self._cmt_click_first_item()
             if not ok or not ct:
                 self._d.get(DY_HOME); time.sleep(3); return
