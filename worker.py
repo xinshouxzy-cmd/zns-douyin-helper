@@ -599,47 +599,50 @@ class AccountWorker(QThread):
                 self._paste(self.cmt_text)
             time.sleep(1)
 
-            # ====== 8. 发送 ======
-            sent_info = self._cmt_js("""
-                var all = document.querySelectorAll('span, button, div, a, [role="button"]');
-                for (var i = 0; i < all.length; i++) {
-                    var t = (all[i].textContent || '').trim();
-                    if (t === '发送' || t === '回复' || t === '发布') {
-                        var r = all[i].getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0 && r.y > window.innerHeight * 0.6)
-                            return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
-                    }
-                }
-                // 兜底：找右下角的按钮（发送按钮通常在输入框右侧）
-                var btns = document.querySelectorAll('button, [role="button"]');
-                for (var i = btns.length-1; i >= 0; i--) {
-                    var r = btns[i].getBoundingClientRect();
-                    if (r.width > 20 && r.height > 20 && r.x > window.innerWidth * 0.7 && r.y > window.innerHeight * 0.8)
-                        return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
-                }
-                return null;
-            """)
-            # 录制坐标兜底
+            # ====== 8. 发送（红色箭头图标按钮，无文字，输入后才出现）=====
             p_send = pos.get("7_发送按钮") if pos else None
-            if not sent_info and p_send:
-                sent_info = {"x": p_send["x"], "y": p_send["y"]}
-                self.L("📤 坐标定位发送按钮...", "white")
-            if sent_info:
-                self.L("📤 点击发送...", "white")
-                self._cmt_click_at(sent_info["x"], sent_info["y"])
-                time.sleep(2)
-                # 验证是否发送成功：输入框应该被清空
+            clicked = False
+            for attempt in range(3):
+                # 等待发送按钮渲染（输入内容后才会出现）
+                time.sleep(0.8)
+                # 策略A：elementFromPoint + JS click（图标按钮无文字，JS textContent搜不到）
+                if p_send:
+                    btn_clicked = self._cmt_js(f"""
+                        var el = document.elementFromPoint({p_send['x']}, {p_send['y']});
+                        if (!el) return false;
+                        for (var i = 0; i < 5; i++) {{
+                            var tag = (el.tagName || '').toLowerCase();
+                            var cls = (el.className || '').toString().toLowerCase();
+                            if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {{
+                                el.click(); return true;
+                            }}
+                            if (el.parentElement) el = el.parentElement;
+                        }}
+                        el.click();
+                        return true;
+                    """)
+                    if btn_clicked:
+                        self.L("📤 elementFromPoint 点击发送", "white")
+                        clicked = True
+                    else:
+                        self.L("📤 坐标点击发送...", "white")
+                        self._cmt_click_at(p_send["x"], p_send["y"])
+                        clicked = True
+                else:
+                    break
+
+                time.sleep(1.5)
+                # 验证：输入框被清空 = 发送成功
                 verify = self._cmt_js("""
                     var el = document.querySelector('[contenteditable="true"]');
                     if (!el) return true;
-                    var txt = (el.textContent || '').trim();
-                    return txt.length === 0;
+                    return (el.textContent || '').trim().length === 0;
                 """)
-                if not verify:
-                    self.L("⚠ 发送可能失败，重试一次...", "yellow")
-                    self._cmt_click_at(sent_info["x"], sent_info["y"])
-                    time.sleep(2)
-            else:
+                if verify:
+                    break
+                self.L(f"⚠ 未验证到发送成功，重试 {attempt+2}/3...", "yellow")
+
+            if not clicked:
                 self.L("⚠ 未找到发送按钮", "yellow")
 
             rec["cmt_fps"].append(fk)
