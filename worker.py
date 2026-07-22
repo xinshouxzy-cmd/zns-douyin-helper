@@ -125,32 +125,37 @@ class AccountWorker(QThread):
                 except:
                     pass
             try:
-                cache_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver")
-                # 优先检查本机平台的缓存目录
-                import platform as _pf
-                _sys_map = {"Windows": "win64", "Darwin": "mac64", "Linux": "linux64"}
-                _sys_key = _pf.system()
-                _pf_dir = os.path.join(cache_dir, _sys_map.get(_sys_key, "win64"))
-                # 如果指定系统目录不存在，回退查找任意平台子目录
-                if not os.path.isdir(_pf_dir) or not os.listdir(_pf_dir):
-                    for _sub in os.listdir(cache_dir) if os.path.isdir(cache_dir) else []:
-                        _p = os.path.join(cache_dir, _sub)
-                        if os.path.isdir(_p) and os.listdir(_p):
-                            _pf_dir = _p; break
-                cached_versions = sorted(os.listdir(_pf_dir), reverse=True) if os.path.isdir(_pf_dir) else []
-                if cached_versions:
-                    _ver_dir = os.path.join(_pf_dir, cached_versions[0])
-                    _binaries = [f for f in os.listdir(_ver_dir) if f.startswith("chromedriver")]
-                    if _binaries:
-                        driver_path = os.path.join(_ver_dir, _binaries[0])
-                        os.chmod(driver_path, 0o755)  # 确保可执行
-                        self.L("驱动已就绪（离线）", "white")
+                self.L("⏳ 正在获取浏览器驱动...", "white")
+                # 用超时包装 install()，避免无网络时无限挂起
+                import threading as _th
+                _install_result = []
+                def _do_install():
+                    try:
+                        _install_result.append(ChromeDriverManager().install())
+                    except Exception as _e:
+                        _install_result.append(_e)
+                _t = _th.Thread(target=_do_install, daemon=True)
+                _t.start()
+                _t.join(timeout=25)
+                if not _install_result:
+                    # 超时：尝试用本地缓存兜底
+                    self.L("⚠ 网络超时，尝试本地缓存...", "yellow")
+                    import platform as _pf, glob as _g
+                    _pf_dir = {"Windows": "win64", "Darwin": "mac64", "Linux": "linux64"}.get(_pf.system(), "win64")
+                    _pattern = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", _pf_dir, "*", "chromedriver*")
+                    _matches = sorted(_g.glob(_pattern), reverse=True)
+                    if _matches:
+                        driver_path = _matches[0]
+                        os.chmod(driver_path, 0o755)
+                        self.L("✓ 使用离线驱动", "green")
                     else:
-                        raise FileNotFoundError("缓存目录中未找到 chromedriver")
+                        self.L("❌ 未找到本地驱动缓存，请检查网络后重试", "red")
+                        raise RuntimeError("驱动获取超时且无本地缓存")
+                elif isinstance(_install_result[0], Exception):
+                    raise _install_result[0]
                 else:
-                    self.L("⏳ 首次运行，正在下载浏览器驱动（约10MB）...", "yellow")
-                    driver_path = ChromeDriverManager().install()
-                    self.L("✓ 驱动下载完成", "green")
+                    driver_path = _install_result[0]
+                    self.L("✓ 驱动就绪", "green")
             except Exception as e:
                 msg2 = str(e)
                 if "lock" in msg2.lower() or "wdm-lock" in msg2:
@@ -158,7 +163,7 @@ class AccountWorker(QThread):
                         os.remove(lock_file)
                     self.L("⚠ 驱动锁冲突，已清理，请重新启动", "yellow")
                 else:
-                    self.L(f"⚠ 驱动下载失败：{e}", "yellow")
+                    self.L(f"⚠ 驱动异常：{e}", "yellow")
                 raise
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
