@@ -105,16 +105,32 @@ class AccountWorker(QThread):
 
     # ── 浏览器 ──
     def _start_browser(self):
+        self.L("正在准备浏览器...", "white")
         opt = Options()
-        # 优先使用内置 Chrome 便携版
         bundled = get_bundled_chrome()
         if bundled:
             opt.binary_location = bundled
             driver_path = find_chromedriver()
+            self.L("使用内置浏览器", "white")
         else:
             # 系统 Chrome → webdriver_manager 自动下载匹配版本
             from webdriver_manager.chrome import ChromeDriverManager
-            driver_path = ChromeDriverManager().install()
+            self.L("检测系统 Chrome 版本...", "white")
+            try:
+                # 检查是否已缓存，避免静默下载卡住
+                cache_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", "win64")
+                cached = os.path.isdir(cache_dir) and os.listdir(cache_dir)
+                if cached:
+                    self.L("驱动已就绪", "white")
+                else:
+                    self.L("⏳ 首次运行，正在下载浏览器驱动（约10MB）...", "yellow")
+                driver_path = ChromeDriverManager().install()
+                if not cached:
+                    self.L("✓ 驱动下载完成", "green")
+            except Exception as e:
+                self.L(f"⚠ 驱动下载失败：{e}", "yellow")
+                self.L("请检查网络连接，或手动安装 ChromeDriver", "yellow")
+                raise
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -122,6 +138,7 @@ class AccountWorker(QThread):
         opt.add_experimental_option("detach", True)
         if sys.platform == "darwin":
             opt.add_argument("--use-mock-keychain")
+        self.L("启动浏览器窗口...", "white")
         try:
             d = webdriver.Chrome(service=Service(driver_path), options=opt)
         except Exception as e:
@@ -136,8 +153,10 @@ class AccountWorker(QThread):
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
         d.set_window_size(1100, 800)
+        self.L("加载抖音首页...", "white")
         d.get(DY_HOME)
         time.sleep(5)
+        self.L("✓ 浏览器就绪", "green")
         return d
 
     def _switch_tab(self, idx):
