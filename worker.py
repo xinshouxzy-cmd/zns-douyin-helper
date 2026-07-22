@@ -108,48 +108,44 @@ class AccountWorker(QThread):
         self.L("正在准备浏览器...", "white")
         opt = Options()
         bundled = get_bundled_chrome()
+        bundled_drv = find_chromedriver()
+
         if bundled:
+            driver_path = bundled_drv
             opt.binary_location = bundled
-            driver_path = find_chromedriver()
             self.L("使用内置浏览器", "white")
+        elif os.path.exists(bundled_drv):
+            # 内置驱动 + 系统 Chrome
+            driver_path = bundled_drv
+            self.L("使用内置驱动", "white")
         else:
-            # 系统 Chrome → webdriver_manager 自动下载匹配版本
+            # 兜底：webdriver_manager 在线下载（25秒超时）
             from webdriver_manager.chrome import ChromeDriverManager
             self.L("检测系统 Chrome 版本...", "white")
-            # 清理可能残留的锁文件（上次异常退出导致）
             lock_file = os.path.join(os.path.expanduser("~"), ".wdm", ".wdm-lock-chromedriver-win64")
             if os.path.exists(lock_file):
-                try:
-                    os.remove(lock_file)
-                    self.L("清理残留锁文件", "white")
-                except:
-                    pass
+                try: os.remove(lock_file); self.L("清理残留锁文件", "white")
+                except: pass
             try:
                 self.L("⏳ 正在获取浏览器驱动...", "white")
-                # 用超时包装 install()，避免无网络时无限挂起
                 import threading as _th
                 _install_result = []
                 def _do_install():
-                    try:
-                        _install_result.append(ChromeDriverManager().install())
-                    except Exception as _e:
-                        _install_result.append(_e)
+                    try: _install_result.append(ChromeDriverManager().install())
+                    except Exception as _e: _install_result.append(_e)
                 _t = _th.Thread(target=_do_install, daemon=True)
                 _t.start()
                 _t.join(timeout=25)
                 if not _install_result:
-                    # 超时：尝试用本地缓存兜底
-                    self.L("⚠ 网络超时，尝试本地缓存...", "yellow")
                     import platform as _pf, glob as _g
                     _pf_dir = {"Windows": "win64", "Darwin": "mac64", "Linux": "linux64"}.get(_pf.system(), "win64")
                     _pattern = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", _pf_dir, "*", "chromedriver*")
                     _matches = sorted(_g.glob(_pattern), reverse=True)
                     if _matches:
-                        driver_path = _matches[0]
-                        os.chmod(driver_path, 0o755)
-                        self.L("✓ 使用离线驱动", "green")
+                        driver_path = _matches[0]; os.chmod(driver_path, 0o755)
+                        self.L("⚠ 网络超时，使用本地缓存", "yellow")
                     else:
-                        self.L("❌ 未找到本地驱动缓存，请检查网络后重试", "red")
+                        self.L("❌ 未找到驱动，请检查网络后重试", "red")
                         raise RuntimeError("驱动获取超时且无本地缓存")
                 elif isinstance(_install_result[0], Exception):
                     raise _install_result[0]
@@ -159,8 +155,7 @@ class AccountWorker(QThread):
             except Exception as e:
                 msg2 = str(e)
                 if "lock" in msg2.lower() or "wdm-lock" in msg2:
-                    if os.path.exists(lock_file):
-                        os.remove(lock_file)
+                    if os.path.exists(lock_file): os.remove(lock_file)
                     self.L("⚠ 驱动锁冲突，已清理，请重新启动", "yellow")
                 else:
                     self.L(f"⚠ 驱动异常：{e}", "yellow")
