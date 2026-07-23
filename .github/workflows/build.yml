@@ -5,6 +5,9 @@ on:
     branches: [master, main]
   workflow_dispatch:
 
+permissions:
+  contents: write   # 允许创建 Release
+
 jobs:
   build:
     runs-on: windows-latest
@@ -15,7 +18,9 @@ jobs:
         shell: bash
         run: |
           VER="v2.0.${{ github.run_number }}"
+          VER_NUM="2.0.${{ github.run_number }}"
           echo "VERSION=$VER" >> $GITHUB_ENV
+          echo "VERSION_NUM=$VER_NUM" >> $GITHUB_ENV
           echo "BUILD_ID=${{ github.run_number }}" >> $GITHUB_ENV
           echo "VERSION = \"$VER\"" > _version.py
 
@@ -90,12 +95,12 @@ jobs:
       - name: Package zip
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\遵农商_抖音客服助手\*" -DestinationPath "遵农商_抖音客服助手_v$env:VERSION.zip"
+          Compress-Archive -Path "dist\遵农商_抖音客服助手\*" -DestinationPath "遵农商_抖音客服助手_v$env:VERSION_NUM.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "遵农商_抖音客服助手_v${{ env.VERSION }}"
+          name: "遵农商_抖音客服助手_v${{ env.VERSION_NUM }}"
           path: "dist/遵农商_抖音客服助手/**"
 
       - name: Release
@@ -103,6 +108,6 @@ jobs:
         with:
           tag_name: "${{ env.VERSION }}-${{ env.BUILD_ID }}"
           name: "遵农商·抖音客服助手 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
-          files: "遵农商_抖音客服助手_v${{ env.VERSION }}.zip"
+          files: "遵农商_抖音客服助手_v${{ env.VERSION_NUM }}.zip"
           prerelease: false
         continue-on-error: true
