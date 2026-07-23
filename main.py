@@ -275,8 +275,8 @@ class AccountPage(QWidget):
         # ── Sheet 1: 私信记录（参照 v42.1 格式）──
         ws1 = wb.active
         ws1.title = "私信回复记录"
-        ws1.append(["序号", "联系时间", "对方消息", "我的回复"])
-        for col in range(1, 5):
+        ws1.append(["序号", "陌生人昵称", "联系时间", "对方消息", "我方回复", "对方后续回复", "用户手机号码"])
+        for col in range(1, 8):
             cell = ws1.cell(row=1, column=col)
             cell.font = header_font_w
             cell.fill = header_fill
@@ -284,13 +284,24 @@ class AccountPage(QWidget):
         pm_history = records.get("pm_records", [])
         if pm_history:
             for i, r in enumerate(pm_history, 1):
-                ws1.append([i, r.get("contact_time", r.get("time", "")), r.get("first_msg", ""), r.get("reply_text", "")])
+                ws1.append([
+                    i,
+                    r.get("nickname", ""),
+                    r.get("contact_time", r.get("time", "")),
+                    r.get("first_msg", ""),
+                    r.get("reply_text", ""),
+                    r.get("follow_up", ""),
+                    r.get("phone", "")
+                ])
         else:
-            ws1.append(["", "", "暂无记录", ""])
+            ws1.append(["", "", "", "暂无记录", "", "", ""])
         ws1.column_dimensions["A"].width = 8
-        ws1.column_dimensions["B"].width = 20
-        ws1.column_dimensions["C"].width = 45
-        ws1.column_dimensions["D"].width = 50
+        ws1.column_dimensions["B"].width = 16
+        ws1.column_dimensions["C"].width = 20
+        ws1.column_dimensions["D"].width = 40
+        ws1.column_dimensions["E"].width = 45
+        ws1.column_dimensions["F"].width = 35
+        ws1.column_dimensions["G"].width = 18
 
         # ── Sheet 2: 评论回复记录 ──
         ws2 = wb.create_sheet("评论回复记录")

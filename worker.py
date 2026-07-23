@@ -316,7 +316,7 @@ class AccountWorker(QThread):
 
             self.L(f'💬 新私信: "{fn}"', "white")
             time.sleep(1)
-            # 提取对方最后一条消息（v42.1 格式需要）
+            # 提取对方最后一条消息
             first_msg = self._js("""
                 let containers = document.querySelectorAll('[class*="MessageItemTextcontainer"]');
                 if (!containers.length) return '';
@@ -326,15 +326,38 @@ class AccountWorker(QThread):
                 spans.forEach(s => { text += s.textContent; });
                 return text.trim();
             """) or ""
+            # 从对方消息中提取手机号
+            phone = ""
+            m = re.search(r'1[3-9]\d{9}', first_msg)
+            if m:
+                phone = m.group()
             time.sleep(1)
             if self.pm_text and self._send_pm_reply(self.pm_text):
                 self._last_reply[fn] = now
                 rec["pm_fps"].append(fn)
+                # 回复后等一下，读对方后续回复
+                time.sleep(3)
+                follow_up = self._js("""
+                    let containers = document.querySelectorAll('[class*="MessageItemTextcontainer"]');
+                    if (!containers.length) return '';
+                    let last = containers[containers.length-1];
+                    let spans = last.querySelectorAll('[class*="TextMessageTextpureText"]');
+                    let text = '';
+                    spans.forEach(s => { text += s.textContent; });
+                    return text.trim();
+                """) or ""
+                # 对方后续回复中也可能有手机号
+                if not phone and follow_up:
+                    m2 = re.search(r'1[3-9]\d{9}', follow_up)
+                    if m2:
+                        phone = m2.group()
                 rec.setdefault("pm_records", []).append({
                     "nickname": fn,
                     "contact_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "first_msg": first_msg[:200],
-                    "reply_text": self.pm_text
+                    "reply_text": self.pm_text,
+                    "follow_up": follow_up[:200] if follow_up != first_msg else "",
+                    "phone": phone
                 })
                 save_replied(self.name, rec)
                 self._pm_n += 1
