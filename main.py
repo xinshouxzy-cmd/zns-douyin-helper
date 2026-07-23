@@ -12,7 +12,8 @@ from threading import Event
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QPushButton, QLabel, QTextEdit, QLineEdit, QTabBar,
-    QCheckBox, QGroupBox, QScrollArea, QMessageBox, QFileDialog, QFrame
+    QCheckBox, QGroupBox, QScrollArea, QMessageBox, QFileDialog, QFrame,
+    QInputDialog
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor
@@ -337,6 +338,9 @@ class MainWindow(QMainWindow):
 
         self._pages = []
         self._load_accounts()
+        # 首次使用：无账号时自动弹出引导向导
+        if len(self._pages) == 0:
+            QTimer.singleShot(300, self._show_new_account_wizard)
 
     def _load_accounts(self):
         cfg = load_config()
@@ -351,15 +355,61 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(page)
 
     def _add_account(self):
+        self._show_new_account_wizard()
+
+    def _show_new_account_wizard(self):
+        """三步引导式新建账号向导"""
+        # ── 欢迎 ──
+        QMessageBox.information(
+            self, "添加账号",
+            "接下来将引导您创建一个新的抖音客服账号。\n\n"
+            "请依次填写以下 3 项必填信息：\n"
+            "  ① 抖音昵称\n"
+            "  ② 私信自动回复话术\n"
+            "  ③ 评论自动回复话术\n\n"
+            "点击「确定」开始 👇"
+        )
+
+        # ── 第 1 步：抖音昵称 ──
+        name, ok1 = QInputDialog.getText(
+            self, "第 1 步 / 3 — 抖音昵称",
+            "请输入该账号的抖音昵称：\n\n（用于区分不同账号，可自定义）",
+            text="我的抖音账号"
+        )
+        if not ok1 or not name.strip():
+            QMessageBox.warning(self, "已取消", "未输入昵称，已取消创建。")
+            return
+
+        # ── 第 2 步：私信回复话术 ──
+        pm_text, ok2 = QInputDialog.getMultiLineText(
+            self, "第 2 步 / 3 — 私信回复话术",
+            "请输入「私信」收到后的自动回复内容：",
+            DEFAULT_PM_REPLY
+        )
+        if not ok2 or not pm_text.strip():
+            QMessageBox.warning(self, "已取消", "私信话术不能为空，已取消创建。")
+            return
+
+        # ── 第 3 步：评论回复话术 ──
+        cmt_text, ok3 = QInputDialog.getMultiLineText(
+            self, "第 3 步 / 3 — 评论回复话术",
+            "请输入「评论」收到后的自动回复内容：",
+            DEFAULT_CMT_REPLY
+        )
+        if not ok3 or not cmt_text.strip():
+            QMessageBox.warning(self, "已取消", "评论话术不能为空，已取消创建。")
+            return
+
+        # ── 保存 ──
         cfg = load_config()
         idx = len(cfg.get("accounts", []))
         new_ac = {
-            "name": f"账号{idx+1}",
+            "name": name.strip(),
             "enabled": True,
             "pm_enabled": True,
-            "pm_reply": DEFAULT_PM_REPLY,
+            "pm_reply": pm_text.strip(),
             "comment_enabled": True,
-            "comment_reply": DEFAULT_CMT_REPLY,
+            "comment_reply": cmt_text.strip(),
             "chrome_profile": f"chrome_profiles/account_{idx+1}"
         }
         if "accounts" not in cfg:
@@ -367,6 +417,12 @@ class MainWindow(QMainWindow):
         cfg["accounts"].append(new_ac)
         save_config(cfg)
         self._add_page(idx, new_ac)
+
+        QMessageBox.information(
+            self, "创建成功",
+            f"「{name.strip()}」已添加！\n\n"
+            f"点击「▶ 启动」并扫码登录后即可开始自动回复。"
+        )
 
     def _close_tab(self, index):
         if self.tabs.count() <= 0:
