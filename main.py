@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QPushButton, QLabel, QTextEdit, QLineEdit, QTabBar,
     QCheckBox, QGroupBox, QScrollArea, QMessageBox, QFileDialog, QFrame,
     QInputDialog, QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy,
-    QGraphicsDropShadowEffect
+    QGraphicsDropShadowEffect, QDialog, QFormLayout, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QPainter
@@ -29,8 +29,8 @@ except Exception:
 # ── 配置 ──────────────────────────────────────────
 APP_TITLE = f"遵农商·抖音客服助手 {VERSION} — 辛振宇"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-DEFAULT_PM_REPLY = "请问您需要办理什么业务呢？如需帮助请留下联系电话～"
-DEFAULT_CMT_REPLY = "感谢您的关注与支持！如有业务需求欢迎私信咨询～"
+DEFAULT_PM_REPLY = "遵义地区政策了解，留下☎️"
+DEFAULT_CMT_REPLY = "谢谢评论，咨询请俬訫"
 PM_POLL = 5
 CMT_POLL = 30
 
@@ -755,77 +755,77 @@ class MainWindow(QMainWindow):
         self._show_new_account_wizard()
 
     def _show_new_account_wizard(self):
-        """三步引导式新建账号向导"""
-        # ── 欢迎 ──
-        QMessageBox.information(
-            self, "添加账号",
-            "接下来将引导您创建一个新的抖音客服账号。\n\n"
-            "请依次填写以下 3 项必填信息：\n"
-            "  ① 抖音昵称\n"
-            "  ② 私信自动回复话术\n"
-            "  ③ 评论自动回复话术\n\n"
-            "点击「确定」开始 👇"
-        )
+        """单页新建账号向导（默认值已预填，直接点确定即可）"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("添加账号")
+        dlg.resize(520, 420)
+        dlg.setMinimumWidth(480)
 
-        DIALOG_STYLE = """
-            QInputDialog { background: #2D2D2D; }
-            QLabel { color: #EEEEEE; font-size: 13px; }
-            QLineEdit { color: #000000; background: #FFFFFF; font-size: 14px; padding: 6px; }
-            QTextEdit, QPlainTextEdit { color: #000000; background: #FFFFFF; font-size: 14px; }
-            QPushButton { padding: 6px 20px; font-size: 13px; }
-        """
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
 
-        # ── 第 1 步：抖音昵称 ──
-        d1 = QInputDialog(self)
-        d1.setWindowTitle("第 1 步 / 3 — 抖音昵称")
-        d1.setLabelText("请输入该账号的抖音昵称：\n\n（用于区分不同账号，可自定义）")
-        d1.setTextValue("我的抖音账号")
-        d1.setInputMode(QInputDialog.TextInput)
-        d1.setStyleSheet(DIALOG_STYLE)
-        ok1 = d1.exec_() == QInputDialog.Accepted
-        name = d1.textValue().strip() if ok1 else ""
-        if not ok1 or not name:
-            QMessageBox.warning(self, "已取消", "未输入昵称，已取消创建。")
+        title = QLabel("📋 新建抖音客服账号")
+        title.setStyleSheet("font-size:16px; font-weight:bold; color:#1A1A1A;")
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+
+        le_name = QLineEdit("我的抖音账号")
+        le_name.setPlaceholderText("输入抖音昵称，用于区分不同账号")
+        le_name.setMinimumHeight(36)
+        form.addRow("抖音昵称：", le_name)
+
+        te_pm = QTextEdit()
+        te_pm.setPlainText(DEFAULT_PM_REPLY)
+        te_pm.setMaximumHeight(80)
+        te_pm.setAcceptRichText(False)
+        form.addRow("私信回复话术：", te_pm)
+
+        te_cmt = QTextEdit()
+        te_cmt.setPlainText(DEFAULT_CMT_REPLY)
+        te_cmt.setMaximumHeight(80)
+        te_cmt.setAcceptRichText(False)
+        form.addRow("评论回复话术：", te_cmt)
+
+        layout.addLayout(form)
+
+        tip = QLabel("💡 以上为默认话术，如需自定义可直接修改，不改直接点确定即可。")
+        tip.setStyleSheet("color:#888; font-size:12px;")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        layout.addStretch()
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText("确定创建")
+        btns.button(QDialogButtonBox.Cancel).setText("取消")
+        btns.button(QDialogButtonBox.Ok).setStyleSheet(_btn_primary())
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec_() != QDialog.Accepted:
             return
 
-        # ── 第 2 步：私信回复话术 ──
-        d2 = QInputDialog(self)
-        d2.setWindowTitle("第 2 步 / 3 — 私信回复话术")
-        d2.setLabelText("请输入「私信」收到后的自动回复内容：")
-        d2.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
-        d2.setTextValue(DEFAULT_PM_REPLY)
-        d2.setStyleSheet(DIALOG_STYLE)
-        d2.resize(550, 350)
-        ok2 = d2.exec_() == QInputDialog.Accepted
-        pm_text = d2.textValue().strip() if ok2 else ""
-        if not ok2 or not pm_text:
-            QMessageBox.warning(self, "已取消", "私信话术不能为空，已取消创建。")
+        name = le_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "已取消", "昵称不能为空，已取消创建。")
             return
-
-        # ── 第 3 步：评论回复话术 ──
-        d3 = QInputDialog(self)
-        d3.setWindowTitle("第 3 步 / 3 — 评论回复话术")
-        d3.setLabelText("请输入「评论」收到后的自动回复内容：")
-        d3.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
-        d3.setTextValue(DEFAULT_CMT_REPLY)
-        d3.setStyleSheet(DIALOG_STYLE)
-        d3.resize(550, 350)
-        ok3 = d3.exec_() == QInputDialog.Accepted
-        cmt_text = d3.textValue().strip() if ok3 else ""
-        if not ok3 or not cmt_text:
-            QMessageBox.warning(self, "已取消", "评论话术不能为空，已取消创建。")
-            return
+        pm_text = te_pm.toPlainText().strip() or DEFAULT_PM_REPLY
+        cmt_text = te_cmt.toPlainText().strip() or DEFAULT_CMT_REPLY
 
         # ── 保存 ──
         cfg = load_config()
         idx = len(cfg.get("accounts", []))
         new_ac = {
-            "name": name.strip(),
+            "name": name,
             "enabled": True,
             "pm_enabled": True,
-            "pm_reply": pm_text.strip(),
+            "pm_reply": pm_text,
             "comment_enabled": True,
-            "comment_reply": cmt_text.strip(),
+            "comment_reply": cmt_text,
             "chrome_profile": f"chrome_profiles/account_{idx+1}"
         }
         if "accounts" not in cfg:
@@ -836,8 +836,7 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(
             self, "创建成功",
-            f"「{name.strip()}」已添加！\n\n"
-            f"点击「▶ 启动」并扫码登录后即可开始自动回复。"
+            f"「{name}」已添加！\n\n点击「▶ 启动」并扫码登录后即可开始自动回复。"
         )
 
     def _close_account(self, index):
