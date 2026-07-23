@@ -265,14 +265,40 @@ class AccountPage(QWidget):
         if not f:
             return
 
+        # ── 暂停 worker（参照 v42.1：导出时停止监控，完成后恢复）──
+        was_running = self.worker and self.worker.isRunning()
+        worker_ref = self.worker
+        if was_running:
+            # 断开 stopped 信号，防止 _on_stopped 干扰恢复流程
+            try:
+                worker_ref.stopped.disconnect(self._on_stopped)
+            except TypeError:
+                pass
+            worker_ref.stop()
+            self.lb_status.setText("⏸ 正在暂停...")
+            self.lb_status.setStyleSheet(f"color:{C_YELLOW};")
+            QApplication.processEvents()
+            worker_ref.wait(15000)
+            # 手动清理（_on_stopped 被断开，需要自己处理）
+            self.worker = None
+            self.btn_start.setText("▶ 启动")
+            self.btn_start.setStyleSheet(_btn("#0E639C"))
+            self.btn_start.setEnabled(True)
+            self.btn_login.setVisible(False)
+            self._in_login_wait = False
+
+        # ── 导出（参照 v42.1 格式）──
+        self.lb_status.setText("📊 导出中...")
+        self.lb_status.setStyleSheet(f"color:{C_YELLOW};")
+        QApplication.processEvents()
+
         wb = Workbook()
-        header_font = Font(bold=True, size=11)
         header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         header_font_w = Font(bold=True, size=11, color="FFFFFF")
 
         records = load_replied(self.cfg.get("name", "账号1"))
 
-        # ── Sheet 1: 私信记录（参照 v42.1 格式）──
+        # ── Sheet 1: 私信记录（v42.1 7列格式）──
         ws1 = wb.active
         ws1.title = "私信回复记录"
         ws1.append(["序号", "陌生人昵称", "联系时间", "对方消息", "我方回复", "对方后续回复", "用户手机号码"])
@@ -323,9 +349,18 @@ class AccountPage(QWidget):
         ws2.column_dimensions["D"].width = 50
 
         wb.save(f)
+
+        # ── 恢复运行 ──
+        if was_running:
+            self.lb_status.setText("✅ 导出完成，正在恢复...")
+            self.lb_status.setStyleSheet(f"color:{C_GREEN};")
+            # 延迟恢复，确保 UI 更新
+            QTimer.singleShot(300, self._toggle)
+
         QMessageBox.information(self, "完成",
             f"已导出至:\n{f}\n\n工作簿包含 2 张表：\n"
-            f"  ① 私信回复记录\n  ② 评论回复记录")
+            f"  ① 私信回复记录（7列）\n  ② 评论回复记录\n"
+            + ("\n功能已自动恢复运行。" if was_running else ""))
 
 
 # ── 主窗口 ────────────────────────────────────────
