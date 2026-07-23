@@ -95,13 +95,14 @@ jobs:
       - name: Package zip
         shell: pwsh
         run: |
-          python -c "
+          @'
           import shutil, os
           src = r'dist\遵农商_抖音客服助手'
-          dst = f'遵农商_抖音客服助手_v{os.environ[\"VERSION_NUM\"]}'
+          dst = f'遵农商_抖音客服助手_v{os.environ["VERSION_NUM"]}'
           shutil.make_archive(dst, 'zip', src)
           print(f'Created: {dst}.zip')
-          "
+          '@ | Out-File -FilePath pack.py -Encoding UTF8
+          python pack.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
