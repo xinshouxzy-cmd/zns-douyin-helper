@@ -21,7 +21,7 @@ from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor
 from worker import AccountWorker, BASE_DIR
 
 # ── 配置 ──────────────────────────────────────────
-APP_TITLE = "遵农商·抖音客服助手"
+APP_TITLE = "遵农商·抖音客服助手 v2.0 — 辛振宇"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_PM_REPLY = "请问您需要办理什么业务呢？如需帮助请留下联系电话～"
 DEFAULT_CMT_REPLY = "感谢您的关注与支持！如有业务需求欢迎私信咨询～"
@@ -283,7 +283,7 @@ class MainWindow(QMainWindow):
         ml.setSpacing(8)
 
         # ── 顶部标题 ──
-        title = QLabel(f"🏦  {APP_TITLE}")
+        title = QLabel(f"🏦  {APP_TITLE}\n       作者：辛振宇")
         title.setStyleSheet(f"color:{C_GREEN}; font-size:18px; font-weight:bold; padding:4px 0;")
         ml.addWidget(title)
 
@@ -294,14 +294,7 @@ class MainWindow(QMainWindow):
         ml.addWidget(self.tabs, 1)
 
         # ── 底部日志 ──
-        log_header = QHBoxLayout()
-        log_header.addWidget(QLabel("📋 运行日志"))
-        log_header.addStretch()
-        btn_clr = QPushButton("清空")
-        btn_clr.setStyleSheet(_btn("#555"))
-        btn_clr.clicked.connect(self._clear_log)
-        log_header.addWidget(btn_clr)
-        ml.addLayout(log_header)
+        ml.addWidget(QLabel("📋 运行日志"))
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
@@ -330,10 +323,6 @@ class MainWindow(QMainWindow):
         btn_add.setStyleSheet(_btn("#555"))
         btn_add.clicked.connect(self._add_account)
         btm.addWidget(btn_add)
-        btn_exp = QPushButton("📊 导出全部")
-        btn_exp.setStyleSheet(_btn("#555"))
-        btn_exp.clicked.connect(self._export_all)
-        btm.addWidget(btn_exp)
         ml.addLayout(btm)
 
         self._pages = []
@@ -455,29 +444,6 @@ class MainWindow(QMainWindow):
             elif not start and running:
                 page._toggle()
 
-    def _export_all(self):
-        f, _ = QFileDialog.getSaveFileName(self, "导出全部报表",
-            f"抖音客服报表_{datetime.now().strftime('%m%d')}.csv", "CSV (*.csv)")
-        if not f:
-            return
-        with open(f, "w", newline="", encoding="utf-8-sig") as fp:
-            w = csv.writer(fp)
-            w.writerow(["账号", "运行状态", "私信回复", "评论回复", "私信累计", "评论累计", "导出时间"])
-            for page in self._pages:
-                running = page.worker and page.worker.isRunning()
-                w.writerow([
-                    page.cfg.get("name", ""),
-                    "运行中" if running else "已停止",
-                    "开启" if page.cb_pm.isChecked() else "关闭",
-                    "开启" if page.cb_cmt.isChecked() else "关闭",
-                    page._pm_count,
-                    page._cmt_count,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ])
-        QMessageBox.information(self, "完成", f"已导出至:\n{f}")
-
-    def _clear_log(self):
-        self.log_box.clear()
 
     def _append_log(self, name, msg):
         ts = datetime.now().strftime("%H:%M:%S")
