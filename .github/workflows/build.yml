@@ -98,9 +98,9 @@ jobs:
           @'
           import shutil, os
           src = r'dist\遵农商_抖音客服助手'
-          dst = f'遵农商_抖音客服助手_v{os.environ["VERSION_NUM"]}'
-          shutil.make_archive(dst, 'zip', src)
-          print('Created: ' + dst + '.zip')
+          dst_name = f'ZNS_Douyin_Helper_v{os.environ["VERSION_NUM"]}'
+          shutil.make_archive(dst_name, 'zip', src)
+          print('Created: ' + dst_name + '.zip')
           '@ | Out-File -FilePath pack.py -Encoding UTF8
           $env:PYTHONIOENCODING = 'utf-8'
           python pack.py
@@ -116,6 +116,6 @@ jobs:
         with:
           tag_name: "${{ env.VERSION }}-${{ env.BUILD_ID }}"
           name: "遵农商·抖音客服助手 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
-          files: "遵农商_抖音客服助手_v${{ env.VERSION_NUM }}.zip"
+          files: "ZNS_Douyin_Helper_v${{ env.VERSION_NUM }}.zip"
           prerelease: false
         continue-on-error: true
