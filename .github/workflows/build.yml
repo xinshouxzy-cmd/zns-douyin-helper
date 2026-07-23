@@ -93,10 +93,15 @@ jobs:
           "@ | Out-File -FilePath "dist\遵农商_抖音客服助手\使用说明.txt" -Encoding UTF8
 
       - name: Package zip
-        shell: bash
+        shell: pwsh
         run: |
-          cd dist
-          zip -r "../遵农商_抖音客服助手_v${VERSION_NUM}.zip" "遵农商_抖音客服助手"
+          python -c "
+          import shutil, os
+          src = r'dist\遵农商_抖音客服助手'
+          dst = f'遵农商_抖音客服助手_v{os.environ[\"VERSION_NUM\"]}'
+          shutil.make_archive(dst, 'zip', src)
+          print(f'Created: {dst}.zip')
+          "
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
