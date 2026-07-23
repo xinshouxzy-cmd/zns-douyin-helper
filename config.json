@@ -1,3 +1,13 @@
 {
-  "accounts": []
+  "accounts": [
+    {
+      "name": "一乐圆",
+      "enabled": true,
+      "pm_enabled": true,
+      "pm_reply": "1",
+      "comment_enabled": true,
+      "comment_reply": "2",
+      "chrome_profile": "chrome_profiles/account_1"
+    }
+  ]
 }

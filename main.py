@@ -13,10 +13,11 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QPushButton, QLabel, QTextEdit, QLineEdit, QTabBar,
     QCheckBox, QGroupBox, QScrollArea, QMessageBox, QFileDialog, QFrame,
-    QInputDialog
+    QInputDialog, QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy,
+    QGraphicsDropShadowEffect
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
+from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QPainter
 
 from worker import AccountWorker, BASE_DIR
 
@@ -46,51 +47,251 @@ def save_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-# ── 暗色主题样式 ───────────────────────────────────
-C_BG = "#1E1E1E"
-C_PANEL = "#252526"
-C_BORDER = "#3C3C3C"
-C_TEXT = "#CCCCCC"
-C_ACCENT = "#0E639C"
-C_GREEN = "#4EC9B0"
-C_YELLOW = "#DCDCAA"
-C_RED = "#F44747"
-C_INPUT = "#3C3C3C"
+# ── 微信风格配色 ───────────────────────────────────
+C_SIDEBAR_BG = "#2C2C2C"
+C_SIDEBAR_HOVER = "#3A3A3A"
+C_SIDEBAR_ACTIVE = "#3A3A3A"
+C_MAIN_BG = "#F0F0F0"
+C_CARD_BG = "#FFFFFF"
+C_TEXT_PRIMARY = "#1A1A1A"
+C_TEXT_SECONDARY = "#888888"
+C_TEXT_SIDEBAR = "#CCCCCC"
+C_TEXT_SIDEBAR_ACTIVE = "#FFFFFF"
+C_ACCENT = "#07C160"
+C_ACCENT_HOVER = "#06AD56"
+C_RED = "#FA5151"
+C_BORDER = "#E5E5E5"
+C_STATUS_RUNNING = "#07C160"
+C_STATUS_STOPPED = "#B0B0B0"
+C_LOG_BG = "#F8F8F8"
+C_BTN_DISABLED = "#C0C0C0"
+
+# 兼容旧引用
+C_GREEN = C_ACCENT
+C_YELLOW = "#E6A23C"
+C_TEXT = C_TEXT_PRIMARY
+C_BG = C_MAIN_BG
+C_PANEL = C_CARD_BG
+C_INPUT = C_CARD_BG
 
 STYLE = f"""
-QMainWindow {{ background: {C_BG}; }}
-QWidget {{ color: {C_TEXT}; font-size: 13px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }}
-QTabWidget::pane {{ border: 1px solid {C_BORDER}; background: {C_PANEL}; border-radius: 4px; }}
-QTabBar::tab {{
-    background: {C_PANEL}; color: {C_TEXT}; padding: 8px 20px;
-    border: 1px solid {C_BORDER}; border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px;
-    margin-right: 2px;
+QMainWindow {{ background: {C_MAIN_BG}; }}
+QWidget {{
+    font-size: 14px;
+    font-family: "PingFang SC", "Microsoft YaHei", "SF Pro Display", sans-serif;
 }}
-QTabBar::tab:selected {{ background: {C_BG}; color: {C_GREEN}; font-weight: bold; }}
-QTabBar::tab:hover {{ background: #2D2D2D; }}
-QLineEdit, QTextEdit {{
-    background: {C_INPUT}; color: {C_TEXT}; border: 1px solid {C_BORDER}; border-radius: 4px; padding: 6px 10px;
+QLineEdit {{
+    background: {C_CARD_BG}; color: {C_TEXT_PRIMARY};
+    border: 1px solid {C_BORDER}; border-radius: 6px;
+    padding: 10px 14px; font-size: 14px;
 }}
-QLineEdit:focus, QTextEdit:focus {{ border-color: {C_ACCENT}; }}
+QLineEdit:focus {{ border-color: {C_ACCENT}; background: #F0FFF5; }}
+QLineEdit:disabled {{ background: #F5F5F5; color: #BBB; }}
+QTextEdit {{
+    background: {C_LOG_BG}; color: {C_TEXT_SECONDARY};
+    border: 1px solid {C_BORDER}; border-radius: 6px;
+    padding: 8px 12px; font-size: 12px;
+    font-family: "SF Mono", "Menlo", "Consolas", "Courier New", monospace;
+}}
 QScrollArea {{ border: none; background: transparent; }}
-QGroupBox {{
-    color: {C_GREEN}; font-weight: bold; border: 1px solid {C_BORDER};
-    border-radius: 6px; margin-top: 12px; padding-top: 16px;
+QCheckBox {{
+    color: {C_TEXT_PRIMARY}; spacing: 8px; font-size: 14px;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
+QCheckBox::indicator {{
+    width: 20px; height: 20px;
+    border: 2px solid {C_BORDER}; border-radius: 4px;
+    background: {C_CARD_BG};
+}}
+QCheckBox::indicator:checked {{
+    background: {C_ACCENT}; border-color: {C_ACCENT};
+}}
+QLabel {{ color: {C_TEXT_PRIMARY}; }}
+QScrollBar:vertical {{
+    background: transparent; width: 6px; margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: #CCC; border-radius: 3px; min-height: 30px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{
+    background: transparent; height: 6px;
+}}
+QScrollBar::handle:horizontal {{
+    background: #CCC; border-radius: 3px; min-width: 30px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 """
 
 
+def _btn_primary():
+    """微信绿主按钮"""
+    return f"""
+        QPushButton {{
+            background: {C_ACCENT}; color: white; border: none;
+            border-radius: 6px; padding: 10px 24px;
+            font-size: 14px; font-weight: bold;
+        }}
+        QPushButton:hover {{ background: {C_ACCENT_HOVER}; }}
+        QPushButton:pressed {{ background: #05944A; }}
+        QPushButton:disabled {{ background: {C_BTN_DISABLED}; color: #999; }}
+    """
+
+
+def _btn_danger():
+    """红色按钮（停止）"""
+    return f"""
+        QPushButton {{
+            background: {C_RED}; color: white; border: none;
+            border-radius: 6px; padding: 10px 24px;
+            font-size: 14px; font-weight: bold;
+        }}
+        QPushButton:hover {{ background: #E04848; }}
+        QPushButton:pressed {{ background: #C73E3E; }}
+        QPushButton:disabled {{ background: {C_BTN_DISABLED}; color: #999; }}
+    """
+
+
+def _btn_default():
+    """灰色次要按钮"""
+    return f"""
+        QPushButton {{
+            background: #E5E5E5; color: {C_TEXT_PRIMARY}; border: none;
+            border-radius: 6px; padding: 10px 24px;
+            font-size: 14px;
+        }}
+        QPushButton:hover {{ background: #D5D5D5; }}
+        QPushButton:pressed {{ background: #C5C5C5; }}
+        QPushButton:disabled {{ background: #F0F0F0; color: #BBB; }}
+    """
+
+
+# 兼容旧 _btn() 调用
 def _btn(color, text_color="white"):
     return f"""
         QPushButton {{
             background: {color}; color: {text_color}; border: none;
-            border-radius: 4px; padding: 7px 18px; font-size: 13px; font-weight: bold;
+            border-radius: 6px; padding: 10px 24px;
+            font-size: 14px; font-weight: bold;
         }}
         QPushButton:hover {{ opacity: 0.85; }}
         QPushButton:pressed {{ background: #333; }}
         QPushButton:disabled {{ background: #555; color: #888; }}
     """
+
+
+class Card(QFrame):
+    """白色圆角卡片"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("card")
+        self.setStyleSheet(f"""
+            #card {{
+                background: {C_CARD_BG};
+                border: 1px solid {C_BORDER};
+                border-radius: 10px;
+            }}
+        """)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+
+class SidebarItem(QWidget):
+    """侧边栏账号项"""
+    clicked = pyqtSignal(int)
+    remove_requested = pyqtSignal(int)
+
+    def __init__(self, idx, name, parent=None):
+        super().__init__(parent)
+        self.idx = idx
+        self._name = name
+        self._active = False
+        self._is_running = False
+        self.setFixedHeight(64)
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(10)
+
+        self.dot = QLabel()
+        self.dot.setFixedSize(10, 10)
+        self._update_dot()
+        lay.addWidget(self.dot)
+
+        tv = QVBoxLayout()
+        tv.setSpacing(2)
+        self.lbl_name = QLabel(self._name)
+        self.lbl_name.setStyleSheet(f"color:{C_TEXT_SIDEBAR};font-size:14px;font-weight:500;")
+        tv.addWidget(self.lbl_name)
+        self.lbl_status = QLabel("已停止")
+        self.lbl_status.setStyleSheet("color:#888;font-size:11px;")
+        tv.addWidget(self.lbl_status)
+        lay.addLayout(tv, 1)
+
+        self.btn_close = QPushButton("×")
+        self.btn_close.setFixedSize(20, 20)
+        self.btn_close.setStyleSheet(f"""
+            QPushButton {{ background:transparent;color:#888;border:none;font-size:16px;font-weight:bold;padding:0; }}
+            QPushButton:hover {{ color:{C_RED};background:rgba(255,255,255,0.1);border-radius:10px; }}
+        """)
+        self.btn_close.clicked.connect(lambda: self.remove_requested.emit(self.idx))
+        self.btn_close.setVisible(False)
+        lay.addWidget(self.btn_close)
+
+    def _update_dot(self):
+        color = C_STATUS_RUNNING if self._is_running else C_STATUS_STOPPED
+        r = 5
+        pix = QPixmap(r * 2 + 2, r * 2 + 2)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor(color))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(1, 1, r * 2, r * 2)
+        p.end()
+        self.dot.setPixmap(pix)
+
+    def set_status(self, is_running, text):
+        self._is_running = is_running
+        self._update_dot()
+        self.lbl_status.setText(text)
+        if is_running:
+            self.lbl_status.setStyleSheet(f"color:{C_STATUS_RUNNING};font-size:11px;")
+        else:
+            self.lbl_status.setStyleSheet("color:#888;font-size:11px;")
+
+    def set_name(self, name):
+        self._name = name
+        self.lbl_name.setText(name)
+
+    def set_active(self, active):
+        self._active = active
+        if active:
+            self.setStyleSheet(f"""
+                SidebarItem {{
+                    background: {C_SIDEBAR_ACTIVE};
+                    border-left: 3px solid {C_ACCENT};
+                }}
+            """)
+            self.lbl_name.setStyleSheet(f"color:{C_TEXT_SIDEBAR_ACTIVE};font-size:14px;font-weight:500;")
+        else:
+            self.setStyleSheet("SidebarItem { border-left: 3px solid transparent; }")
+            self.lbl_name.setStyleSheet(f"color:{C_TEXT_SIDEBAR};font-size:14px;font-weight:400;")
+
+    def enterEvent(self, event):
+        if not self._active:
+            self.setStyleSheet(f"SidebarItem {{ background: {C_SIDEBAR_HOVER}; border-left: 3px solid transparent; }}")
+        self.btn_close.setVisible(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._active:
+            self.setStyleSheet("SidebarItem { border-left: 3px solid transparent; }")
+        self.btn_close.setVisible(False)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.idx)
+        super().mousePressEvent(event)
 
 
 # ── 每个账号的页面 ─────────────────────────────────
@@ -108,66 +309,105 @@ class AccountPage(QWidget):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
 
-        # ── 名称 + 状态 ──
-        row1 = QHBoxLayout()
-        lbl = QLabel("🏷 名称:")
-        lbl.setFixedWidth(55)
-        self.le_name = QLineEdit(self.cfg.get("name", ""))
-        self.le_name.setPlaceholderText("输入账号名称（标签页将自动更新）")
-        self.le_name.textChanged.connect(self._on_name_changed)
+        # ── 标题行：名称 + 状态徽章 ──
+        title_row = QHBoxLayout()
+        lbl_title = QLabel("⚙️ 账号设置")
+        lbl_title.setStyleSheet(f"font-size:20px; font-weight:bold; color:{C_TEXT_PRIMARY};")
+        title_row.addWidget(lbl_title)
+        title_row.addStretch()
         self.lb_status = QLabel("⏸ 未启动")
-        self.lb_status.setStyleSheet(f"color:#888;")
-        row1.addWidget(lbl)
-        row1.addWidget(self.le_name, 1)
-        row1.addWidget(self.lb_status)
-        lay.addLayout(row1)
+        self.lb_status.setStyleSheet(f"""
+            background: #F0F0F0; color: {C_TEXT_SECONDARY};
+            padding: 4px 14px; border-radius: 12px; font-size: 13px;
+        """)
+        title_row.addWidget(self.lb_status)
+        lay.addLayout(title_row)
 
-        # ── 确认登录按钮（初始隐藏）──
-        self.btn_login = QPushButton("✓ 确认已登录")
-        self.btn_login.setStyleSheet(_btn(C_GREEN, "black"))
+        # ── 账号名称卡片 ──
+        card_name = Card()
+        cn_lay = QVBoxLayout(card_name)
+        cn_lay.setContentsMargins(20, 16, 20, 16)
+        cn_lay.setSpacing(8)
+        lbl_n = QLabel("🏷 账号名称")
+        lbl_n.setStyleSheet(f"font-weight:bold; color:{C_TEXT_PRIMARY}; font-size:14px;")
+        cn_lay.addWidget(lbl_n)
+        self.le_name = QLineEdit(self.cfg.get("name", ""))
+        self.le_name.setPlaceholderText("输入账号名称（侧边栏将自动更新）")
+        self.le_name.textChanged.connect(self._on_name_changed)
+        cn_lay.addWidget(self.le_name)
+        lay.addWidget(card_name)
+
+        # ── 确认登录按钮 ──
+        self.btn_login = QPushButton("✓ 确认已扫码登录")
+        self.btn_login.setStyleSheet(_btn_primary())
         self.btn_login.clicked.connect(self._confirm_login)
         self.btn_login.setVisible(False)
+        self.btn_login.setFixedHeight(42)
         lay.addWidget(self.btn_login)
 
-        # ── 私信回复 ──
-        g_pm = QGroupBox("💬 私信自动回复")
-        g_pm_lay = QVBoxLayout(g_pm)
-        self.cb_pm = QCheckBox("启用私信回复")
+        # ── 私信回复卡片 ──
+        card_pm = Card()
+        cp_lay = QVBoxLayout(card_pm)
+        cp_lay.setContentsMargins(20, 16, 20, 16)
+        cp_lay.setSpacing(10)
+        pm_hdr = QHBoxLayout()
+        lbl_pm = QLabel("💬 私信自动回复")
+        lbl_pm.setStyleSheet(f"font-weight:bold; color:{C_TEXT_PRIMARY}; font-size:14px;")
+        pm_hdr.addWidget(lbl_pm)
+        pm_hdr.addStretch()
+        self.cb_pm = QCheckBox("启用")
         self.cb_pm.setChecked(self.cfg.get("pm_enabled", True))
         self.cb_pm.toggled.connect(self._save)
+        pm_hdr.addWidget(self.cb_pm)
+        cp_lay.addLayout(pm_hdr)
+        lbl_tip = QLabel("回复话术：")
+        lbl_tip.setStyleSheet(f"color:{C_TEXT_SECONDARY}; font-size:12px;")
+        cp_lay.addWidget(lbl_tip)
         self.le_pm = QLineEdit(self.cfg.get("pm_reply", DEFAULT_PM_REPLY))
         self.le_pm.setPlaceholderText("私信回复话术...")
         self.le_pm.textChanged.connect(self._save)
-        g_pm_lay.addWidget(self.cb_pm)
-        g_pm_lay.addWidget(QLabel("话术:"))
-        g_pm_lay.addWidget(self.le_pm)
-        lay.addWidget(g_pm)
+        cp_lay.addWidget(self.le_pm)
+        lay.addWidget(card_pm)
 
-        # ── 评论回复 ──
-        g_cmt = QGroupBox("📝 评论自动回复")
-        g_cmt_lay = QVBoxLayout(g_cmt)
-        self.cb_cmt = QCheckBox("启用评论回复")
+        # ── 评论回复卡片 ──
+        card_cmt = Card()
+        cc_lay = QVBoxLayout(card_cmt)
+        cc_lay.setContentsMargins(20, 16, 20, 16)
+        cc_lay.setSpacing(10)
+        cmt_hdr = QHBoxLayout()
+        lbl_cmt = QLabel("📝 评论自动回复")
+        lbl_cmt.setStyleSheet(f"font-weight:bold; color:{C_TEXT_PRIMARY}; font-size:14px;")
+        cmt_hdr.addWidget(lbl_cmt)
+        cmt_hdr.addStretch()
+        self.cb_cmt = QCheckBox("启用")
         self.cb_cmt.setChecked(self.cfg.get("comment_enabled", True))
         self.cb_cmt.toggled.connect(self._save)
+        cmt_hdr.addWidget(self.cb_cmt)
+        cc_lay.addLayout(cmt_hdr)
+        lbl_tip2 = QLabel("回复话术：")
+        lbl_tip2.setStyleSheet(f"color:{C_TEXT_SECONDARY}; font-size:12px;")
+        cc_lay.addWidget(lbl_tip2)
         self.le_cmt = QLineEdit(self.cfg.get("comment_reply", DEFAULT_CMT_REPLY))
         self.le_cmt.setPlaceholderText("评论回复话术...")
         self.le_cmt.textChanged.connect(self._save)
-        g_cmt_lay.addWidget(self.cb_cmt)
-        g_cmt_lay.addWidget(QLabel("话术:"))
-        g_cmt_lay.addWidget(self.le_cmt)
-        lay.addWidget(g_cmt)
+        cc_lay.addWidget(self.le_cmt)
+        lay.addWidget(card_cmt)
+
+        lay.addStretch()
 
         # ── 操作按钮 ──
-        lay.addStretch()
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
         self.btn_start = QPushButton("▶ 启动")
-        self.btn_start.setStyleSheet(_btn("#0E639C"))
+        self.btn_start.setStyleSheet(_btn_primary())
+        self.btn_start.setFixedHeight(42)
         self.btn_start.clicked.connect(self._toggle)
         self.btn_export = QPushButton("📊 导出数据")
-        self.btn_export.setStyleSheet(_btn("#555"))
+        self.btn_export.setStyleSheet(_btn_default())
+        self.btn_export.setFixedHeight(42)
         self.btn_export.clicked.connect(self._export_one)
         btn_row.addStretch()
         btn_row.addWidget(self.btn_start)
@@ -176,12 +416,7 @@ class AccountPage(QWidget):
 
     def _on_name_changed(self, txt):
         self._save()
-        parent = self.main.tabs
-        for i in range(parent.count()):
-            if parent.widget(i) == self:
-                name = txt.strip() or f"账号{self.idx+1}"
-                parent.setTabText(i, name)
-                break
+        self.main._update_sidebar_name(self.idx, txt.strip() or f"账号{self.idx+1}")
 
     def _save(self):
         self.cfg["name"] = self.le_name.text().strip() or f"账号{self.idx+1}"
@@ -194,13 +429,22 @@ class AccountPage(QWidget):
             cfg["accounts"][self.idx] = self.cfg
             save_config(cfg)
 
+    def _set_status_ui(self, text, color, is_running=False, status_text=""):
+        self.lb_status.setText(text)
+        self.lb_status.setStyleSheet(f"""
+            background: {color}20; color: {color};
+            padding: 4px 14px; border-radius: 12px;
+            font-size: 13px; font-weight: bold;
+        """)
+        if status_text:
+            self.main._update_sidebar_status(self.idx, is_running, status_text)
+
     def _confirm_login(self):
         """用户点击「确认已登录」"""
         if self.worker:
             self.worker.confirm_login()
             self.btn_login.setVisible(False)
-            self.lb_status.setText("登录确认中...")
-            self.lb_status.setStyleSheet(f"color:{C_GREEN};")
+            self._set_status_ui("登录确认中...", C_ACCENT, True, "登录确认中...")
 
     def _toggle(self):
         if self.worker and self.worker.isRunning():
@@ -218,22 +462,18 @@ class AccountPage(QWidget):
             self.worker.stopped.connect(self._on_stopped)
             self.worker.start()
             self.btn_start.setText("⏹ 停止")
-            self.btn_start.setStyleSheet(_btn(C_RED))
-            self.lb_status.setText("⏳ 启动中...")
-            self.lb_status.setStyleSheet(f"color:{C_GREEN};")
+            self.btn_start.setStyleSheet(_btn_danger())
+            self._set_status_ui("启动中...", C_ACCENT, True, "启动中...")
 
     def _on_waiting_login(self, name):
-        """Worker 进入等待登录状态，显示确认按钮"""
         if name == self.cfg.get("name"):
             self._in_login_wait = True
             self.btn_login.setVisible(True)
-            self.lb_status.setText("📱 请扫码登录后点击确认")
-            self.lb_status.setStyleSheet(f"color:{C_YELLOW};")
+            self._set_status_ui("📱 请扫码登录", C_YELLOW, True, "等待扫码登录")
 
     def _on_status(self, name, s):
         if name == self.cfg.get("name"):
-            self.lb_status.setText(s)
-            self.lb_status.setStyleSheet(f"color:{C_GREEN};")
+            self._set_status_ui(s, C_ACCENT, True, s)
 
     def _on_pm_cnt(self, name, n):
         if name == self.cfg.get("name"):
@@ -247,12 +487,11 @@ class AccountPage(QWidget):
         if name == self.cfg.get("name"):
             self.worker = None
             self.btn_start.setText("▶ 启动")
-            self.btn_start.setStyleSheet(_btn("#0E639C"))
+            self.btn_start.setStyleSheet(_btn_primary())
             self.btn_start.setEnabled(True)
             self.btn_login.setVisible(False)
             self._in_login_wait = False
-            self.lb_status.setText("⏸ 已停止")
-            self.lb_status.setStyleSheet("color:#888;")
+            self._set_status_ui("⏸ 已停止", C_TEXT_SECONDARY, False, "已停止")
 
     def _export_one(self):
         from openpyxl import Workbook
@@ -275,25 +514,23 @@ class AccountPage(QWidget):
             except TypeError:
                 pass
             worker_ref.stop()
-            self.lb_status.setText("⏸ 正在暂停...")
-            self.lb_status.setStyleSheet(f"color:{C_YELLOW};")
+            self._set_status_ui("⏸ 正在暂停...", C_YELLOW, False, "导出暂停中")
             QApplication.processEvents()
             worker_ref.wait(15000)
             # 手动清理（_on_stopped 被断开，需要自己处理）
             self.worker = None
             self.btn_start.setText("▶ 启动")
-            self.btn_start.setStyleSheet(_btn("#0E639C"))
+            self.btn_start.setStyleSheet(_btn_primary())
             self.btn_start.setEnabled(True)
             self.btn_login.setVisible(False)
             self._in_login_wait = False
 
         # ── 导出（参照 v42.1 格式）──
-        self.lb_status.setText("📊 导出中...")
-        self.lb_status.setStyleSheet(f"color:{C_YELLOW};")
+        self._set_status_ui("📊 导出中...", "#409EFF", False, "导出中")
         QApplication.processEvents()
 
         wb = Workbook()
-        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_fill = PatternFill(start_color="07C160", end_color="07C160", fill_type="solid")
         header_font_w = Font(bold=True, size=11, color="FFFFFF")
 
         records = load_replied(self.cfg.get("name", "账号1"))
@@ -352,9 +589,7 @@ class AccountPage(QWidget):
 
         # ── 恢复运行 ──
         if was_running:
-            self.lb_status.setText("✅ 导出完成，正在恢复...")
-            self.lb_status.setStyleSheet(f"color:{C_GREEN};")
-            # 延迟恢复，确保 UI 更新
+            self._set_status_ui("✅ 导出完成，恢复中...", C_ACCENT, True, "恢复运行中")
             QTimer.singleShot(300, self._toggle)
 
         QMessageBox.information(self, "完成",
@@ -368,64 +603,132 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(880, 680)
+        self.resize(960, 720)
+        self.setMinimumSize(780, 560)
         self.setStyleSheet(STYLE)
 
         central = QWidget()
         self.setCentralWidget(central)
-        ml = QVBoxLayout(central)
-        ml.setContentsMargins(12, 10, 12, 10)
-        ml.setSpacing(8)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── 顶部标题 ──
-        title = QLabel(f"🏦  {APP_TITLE}")
-        title.setStyleSheet(f"color:{C_GREEN}; font-size:18px; font-weight:bold; padding:4px 0;")
-        ml.addWidget(title)
+        # ═══════════ 左侧边栏 ═══════════
+        sidebar_frame = QFrame()
+        sidebar_frame.setFixedWidth(220)
+        sidebar_frame.setStyleSheet(f"background:{C_SIDEBAR_BG}; border:none;")
+        sbl = QVBoxLayout(sidebar_frame)
+        sbl.setContentsMargins(0, 0, 0, 0)
+        sbl.setSpacing(0)
 
-        # ── 标签页 ──
-        self.tabs = QTabWidget()
-        self.tabs.setTabsClosable(True)
-        self.tabs.tabCloseRequested.connect(self._close_tab)
-        ml.addWidget(self.tabs, 1)
+        sb_title = QLabel("📋 账号列表")
+        sb_title.setStyleSheet(f"color:{C_TEXT_SIDEBAR}; font-size:13px; font-weight:bold; padding:16px 16px 12px 16px;")
+        sbl.addWidget(sb_title)
 
-        # ── 底部日志 ──
-        ml.addWidget(QLabel("📋 运行日志"))
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet("color:#444;margin:0 12px;")
+        sbl.addWidget(div)
+
+        self.sidebar_items_layout = QVBoxLayout()
+        self.sidebar_items_layout.setSpacing(0)
+        sbl.addLayout(self.sidebar_items_layout)
+        sbl.addStretch()
+
+        btn_add_sidebar = QPushButton("＋ 新增账号")
+        btn_add_sidebar.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C_ACCENT};
+                border: 1px solid {C_ACCENT}; border-radius: 6px;
+                padding: 8px 16px; font-size: 13px; margin: 10px 12px;
+            }}
+            QPushButton:hover {{ background: {C_ACCENT}; color: white; }}
+        """)
+        btn_add_sidebar.clicked.connect(self._add_account)
+        sbl.addWidget(btn_add_sidebar)
+
+        ver_lbl = QLabel(f"  {VERSION}")
+        ver_lbl.setStyleSheet("color:#555;font-size:11px;padding:4px 16px 8px 16px;")
+        sbl.addWidget(ver_lbl)
+
+        root.addWidget(sidebar_frame)
+
+        # ═══════════ 右侧主区域 ═══════════
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(0)
+
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet(f"background:{C_MAIN_BG};")
+        right.addWidget(self.stack, 1)
+
+        # ── 日志区域 ──
+        log_frame = QFrame()
+        log_frame.setStyleSheet(f"background:{C_CARD_BG};border-top:1px solid {C_BORDER};")
+        lfl = QVBoxLayout(log_frame)
+        lfl.setContentsMargins(16, 8, 16, 10)
+        lfl.setSpacing(4)
+        log_hdr = QHBoxLayout()
+        log_hdr.addWidget(QLabel("📋 运行日志"))
+        log_hdr.addStretch()
+        btn_clear_log = QPushButton("清空")
+        btn_clear_log.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{C_TEXT_SECONDARY}; border:none; font-size:12px; }}
+            QPushButton:hover {{ color:{C_RED}; }}
+        """)
+        btn_clear_log.clicked.connect(lambda: self.log_box.clear())
+        log_hdr.addWidget(btn_clear_log)
+        lfl.addLayout(log_hdr)
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMaximumHeight(140)
-        self.log_box.setStyleSheet(f"""
-            QTextEdit {{
-                background: #111; color: {C_TEXT}; border: 1px solid {C_BORDER};
-                border-radius: 4px; padding: 6px; font-size: 11px;
-                font-family: "Consolas", "Menlo", "Courier New", monospace;
-            }}
-        """)
-        ml.addWidget(self.log_box)
+        lfl.addWidget(self.log_box)
+        right.addWidget(log_frame)
 
         # ── 底部按钮栏 ──
         btm = QHBoxLayout()
+        btm.setContentsMargins(20, 8, 20, 10)
+        btm.setSpacing(12)
         btm.addStretch()
         btn_all = QPushButton("▶ 全部启动")
-        btn_all.setStyleSheet(_btn("#0E639C"))
+        btn_all.setStyleSheet(_btn_primary())
         btn_all.clicked.connect(lambda: self._all_toggle(True))
         btm.addWidget(btn_all)
         btn_stop = QPushButton("⏹ 全部停止")
-        btn_stop.setStyleSheet(_btn(C_RED))
+        btn_stop.setStyleSheet(_btn_danger())
         btn_stop.clicked.connect(lambda: self._all_toggle(False))
         btm.addWidget(btn_stop)
-        btn_add = QPushButton("➕ 新增账号")
-        btn_add.setStyleSheet(_btn("#555"))
-        btn_add.clicked.connect(self._add_account)
-        btm.addWidget(btn_add)
-        ml.addLayout(btm)
+        right.addLayout(btm)
 
-        self._pages = []
+        root.addLayout(right, 1)
+
+        self._pages = []       # AccountPage 列表
+        self._sidebar_items = []  # QWidget (sidebar item) 列表
         self._load_accounts()
-        # 首次使用：无账号时自动弹出引导向导
         if len(self._pages) == 0:
             QTimer.singleShot(300, self._show_new_account_wizard)
 
+    # ── 侧边栏操作 ──
+    def _update_sidebar_name(self, idx, name):
+        if 0 <= idx < len(self._sidebar_items):
+            self._sidebar_items[idx].set_name(name)
+
+    def _update_sidebar_status(self, idx, is_running, text):
+        if 0 <= idx < len(self._sidebar_items):
+            self._sidebar_items[idx].set_status(is_running, text)
+
+    def _on_sidebar_click(self, idx):
+        if 0 <= idx < len(self._pages):
+            # 高亮选中的侧边栏项
+            for i, item in enumerate(self._sidebar_items):
+                item.set_active(i == idx)
+            self.stack.setCurrentIndex(idx)
+
+    def _on_sidebar_remove(self, idx):
+        self._close_account(idx)
+
+    # ── 账号管理 ──
     def _load_accounts(self):
         cfg = load_config()
         for i, ac in enumerate(cfg.get("accounts", [])):
@@ -434,9 +737,19 @@ class MainWindow(QMainWindow):
     def _add_page(self, idx, ac):
         page = AccountPage(idx, ac, self)
         name = ac.get("name") or f"账号{idx+1}"
-        self.tabs.addTab(page, name)
         self._pages.append(page)
-        self.tabs.setCurrentWidget(page)
+        self.stack.addWidget(page)
+
+        # 创建侧边栏项
+        item = SidebarItem(idx, name)
+        item.clicked.connect(self._on_sidebar_click)
+        item.remove_requested.connect(self._on_sidebar_remove)
+        self.sidebar_items_layout.addWidget(item)
+        self._sidebar_items.append(item)
+
+        # 默认选中第一项
+        if idx == 0:
+            self._on_sidebar_click(0)
 
     def _add_account(self):
         self._show_new_account_wizard()
@@ -527,11 +840,11 @@ class MainWindow(QMainWindow):
             f"点击「▶ 启动」并扫码登录后即可开始自动回复。"
         )
 
-    def _close_tab(self, index):
-        if self.tabs.count() <= 0:
+    def _close_account(self, index):
+        if index < 0 or index >= len(self._pages):
             return
-        page = self._pages[index] if index < len(self._pages) else None
-        if page and page.worker and page.worker.isRunning():
+        page = self._pages[index]
+        if page.worker and page.worker.isRunning():
             page.worker.stop()
             page.worker.wait(2000)
 
@@ -540,18 +853,30 @@ class MainWindow(QMainWindow):
             cfg["accounts"].pop(index)
             save_config(cfg)
 
-        self._pages.pop(index)
-        self.tabs.removeTab(index)
+        # 移除侧边栏项
+        if index < len(self._sidebar_items):
+            item = self._sidebar_items.pop(index)
+            self.sidebar_items_layout.removeWidget(item)
+            item.deleteLater()
 
+        # 移除页面
+        self._pages.pop(index)
+        self.stack.removeWidget(page)
+        page.deleteLater()
+
+        # 更新索引
         for i, p in enumerate(self._pages):
             p.idx = i
             p._save()
+        for i, item in enumerate(self._sidebar_items):
+            item.idx = i
+
+        # 选中下一个
+        if self._pages:
+            self._on_sidebar_click(min(index, len(self._pages) - 1))
 
     def _all_toggle(self, start):
-        for i in range(self.tabs.count()):
-            page = self._pages[i] if i < len(self._pages) else None
-            if not page:
-                continue
+        for page in self._pages:
             running = page.worker and page.worker.isRunning()
             if start and not running:
                 page._toggle()
