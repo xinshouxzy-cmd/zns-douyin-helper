@@ -20,8 +20,13 @@ from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor
 
 from worker import AccountWorker, BASE_DIR
 
+try:
+    from _version import VERSION
+except Exception:
+    VERSION = "v2.0"
+
 # ── 配置 ──────────────────────────────────────────
-APP_TITLE = "遵农商·抖音客服助手 v2.0 — 辛振宇"
+APP_TITLE = f"遵农商·抖音客服助手 {VERSION} — 辛振宇"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_PM_REPLY = "请问您需要办理什么业务呢？如需帮助请留下联系电话～"
 DEFAULT_CMT_REPLY = "感谢您的关注与支持！如有业务需求欢迎私信咨询～"
@@ -250,22 +255,66 @@ class AccountPage(QWidget):
             self.lb_status.setStyleSheet("color:#888;")
 
     def _export_one(self):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+        from worker import load_replied
+
         f, _ = QFileDialog.getSaveFileName(self, "导出数据",
-            f"{self.cfg.get('name','账号')}_{datetime.now().strftime('%m%d')}.csv", "CSV (*.csv)")
+            f"{self.cfg.get('name','账号')}_{datetime.now().strftime('%m%d')}.xlsx",
+            "Excel (*.xlsx)")
         if not f:
             return
-        with open(f, "w", newline="", encoding="utf-8-sig") as fp:
-            w = csv.writer(fp)
-            w.writerow(["账号", "私信累计", "评论累计", "私信话术", "评论话术", "导出时间"])
-            w.writerow([
-                self.cfg.get("name", ""),
-                self._pm_count,
-                self._cmt_count,
-                self.le_pm.text(),
-                self.le_cmt.text(),
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ])
-        QMessageBox.information(self, "完成", f"已导出至:\n{f}")
+
+        wb = Workbook()
+        header_font = Font(bold=True, size=11)
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font_w = Font(bold=True, size=11, color="FFFFFF")
+
+        records = load_replied(self.cfg.get("name", "账号1"))
+
+        # ── Sheet 1: 私信记录 ──
+        ws1 = wb.active
+        ws1.title = "私信回复记录"
+        ws1.append(["序号", "回复时间", "用户昵称", "回复内容"])
+        for col in range(1, 5):
+            cell = ws1.cell(row=1, column=col)
+            cell.font = header_font_w
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+        pm_history = records.get("pm_records", [])
+        if pm_history:
+            for i, r in enumerate(pm_history, 1):
+                ws1.append([i, r.get("time", ""), r.get("nickname", ""), r.get("reply_text", "")])
+        else:
+            ws1.append(["", "", "暂无记录", ""])
+        ws1.column_dimensions["A"].width = 8
+        ws1.column_dimensions["B"].width = 20
+        ws1.column_dimensions["C"].width = 18
+        ws1.column_dimensions["D"].width = 50
+
+        # ── Sheet 2: 评论回复记录 ──
+        ws2 = wb.create_sheet("评论回复记录")
+        ws2.append(["序号", "回复时间", "评论昵称", "回复内容"])
+        for col in range(1, 5):
+            cell = ws2.cell(row=1, column=col)
+            cell.font = header_font_w
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+        cmt_history = records.get("cmt_records", [])
+        if cmt_history:
+            for i, r in enumerate(cmt_history, 1):
+                ws2.append([i, r.get("time", ""), r.get("nickname", ""), r.get("reply_text", "")])
+        else:
+            ws2.append(["", "", "暂无记录", ""])
+        ws2.column_dimensions["A"].width = 8
+        ws2.column_dimensions["B"].width = 20
+        ws2.column_dimensions["C"].width = 18
+        ws2.column_dimensions["D"].width = 50
+
+        wb.save(f)
+        QMessageBox.information(self, "完成",
+            f"已导出至:\n{f}\n\n工作簿包含 2 张表：\n"
+            f"  ① 私信回复记录\n  ② 评论回复记录")
 
 
 # ── 主窗口 ────────────────────────────────────────
@@ -283,7 +332,7 @@ class MainWindow(QMainWindow):
         ml.setSpacing(8)
 
         # ── 顶部标题 ──
-        title = QLabel(f"🏦  {APP_TITLE}\n       作者：辛振宇")
+        title = QLabel(f"🏦  {APP_TITLE}")
         title.setStyleSheet(f"color:{C_GREEN}; font-size:18px; font-weight:bold; padding:4px 0;")
         ml.addWidget(title)
 
@@ -359,33 +408,52 @@ class MainWindow(QMainWindow):
             "点击「确定」开始 👇"
         )
 
+        DIALOG_STYLE = """
+            QInputDialog { background: #2D2D2D; }
+            QLabel { color: #EEEEEE; font-size: 13px; }
+            QLineEdit { color: #000000; background: #FFFFFF; font-size: 14px; padding: 6px; }
+            QTextEdit, QPlainTextEdit { color: #000000; background: #FFFFFF; font-size: 14px; }
+            QPushButton { padding: 6px 20px; font-size: 13px; }
+        """
+
         # ── 第 1 步：抖音昵称 ──
-        name, ok1 = QInputDialog.getText(
-            self, "第 1 步 / 3 — 抖音昵称",
-            "请输入该账号的抖音昵称：\n\n（用于区分不同账号，可自定义）",
-            text="我的抖音账号"
-        )
-        if not ok1 or not name.strip():
+        d1 = QInputDialog(self)
+        d1.setWindowTitle("第 1 步 / 3 — 抖音昵称")
+        d1.setLabelText("请输入该账号的抖音昵称：\n\n（用于区分不同账号，可自定义）")
+        d1.setTextValue("我的抖音账号")
+        d1.setInputMode(QInputDialog.TextInput)
+        d1.setStyleSheet(DIALOG_STYLE)
+        ok1 = d1.exec_() == QInputDialog.Accepted
+        name = d1.textValue().strip() if ok1 else ""
+        if not ok1 or not name:
             QMessageBox.warning(self, "已取消", "未输入昵称，已取消创建。")
             return
 
         # ── 第 2 步：私信回复话术 ──
-        pm_text, ok2 = QInputDialog.getMultiLineText(
-            self, "第 2 步 / 3 — 私信回复话术",
-            "请输入「私信」收到后的自动回复内容：",
-            DEFAULT_PM_REPLY
-        )
-        if not ok2 or not pm_text.strip():
+        d2 = QInputDialog(self)
+        d2.setWindowTitle("第 2 步 / 3 — 私信回复话术")
+        d2.setLabelText("请输入「私信」收到后的自动回复内容：")
+        d2.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
+        d2.setTextValue(DEFAULT_PM_REPLY)
+        d2.setStyleSheet(DIALOG_STYLE)
+        d2.resize(550, 350)
+        ok2 = d2.exec_() == QInputDialog.Accepted
+        pm_text = d2.textValue().strip() if ok2 else ""
+        if not ok2 or not pm_text:
             QMessageBox.warning(self, "已取消", "私信话术不能为空，已取消创建。")
             return
 
         # ── 第 3 步：评论回复话术 ──
-        cmt_text, ok3 = QInputDialog.getMultiLineText(
-            self, "第 3 步 / 3 — 评论回复话术",
-            "请输入「评论」收到后的自动回复内容：",
-            DEFAULT_CMT_REPLY
-        )
-        if not ok3 or not cmt_text.strip():
+        d3 = QInputDialog(self)
+        d3.setWindowTitle("第 3 步 / 3 — 评论回复话术")
+        d3.setLabelText("请输入「评论」收到后的自动回复内容：")
+        d3.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
+        d3.setTextValue(DEFAULT_CMT_REPLY)
+        d3.setStyleSheet(DIALOG_STYLE)
+        d3.resize(550, 350)
+        ok3 = d3.exec_() == QInputDialog.Accepted
+        cmt_text = d3.textValue().strip() if ok3 else ""
+        if not ok3 or not cmt_text:
             QMessageBox.warning(self, "已取消", "评论话术不能为空，已取消创建。")
             return
 

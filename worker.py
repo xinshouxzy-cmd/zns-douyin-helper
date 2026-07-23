@@ -8,6 +8,7 @@
 """
 
 import os, sys, json, time, re, subprocess, traceback
+from datetime import datetime
 from threading import Event
 
 from selenium import webdriver
@@ -318,6 +319,11 @@ class AccountWorker(QThread):
             if self.pm_text and self._send_pm_reply(self.pm_text):
                 self._last_reply[fn] = now
                 rec["pm_fps"].append(fn)
+                rec.setdefault("pm_records", []).append({
+                    "nickname": fn,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "reply_text": self.pm_text
+                })
                 save_replied(self.name, rec)
                 self._pm_n += 1
                 self.pm_cnt.emit(self.name, self._pm_n)
@@ -645,7 +651,19 @@ class AccountWorker(QThread):
             if not clicked:
                 self.L("⚠ 未找到发送按钮", "yellow")
 
+            # 提取评论昵称
+            cmt_nickname = ct[:20]
+            nick_match = re.match(r'^(.+?)(?:评论|回复|说|：|:)', ct)
+            if nick_match:
+                cmt_nickname = nick_match.group(1).strip()
+
             rec["cmt_fps"].append(fk)
+            rec.setdefault("cmt_records", []).append({
+                "nickname": cmt_nickname,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "comment_text": ct[:80],
+                "reply_text": self.cmt_text or "感谢关注！"
+            })
             save_replied(self.name, rec)
             self._cmt_n += 1
             self.cmt_cnt.emit(self.name, self._cmt_n)

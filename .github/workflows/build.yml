@@ -17,13 +17,14 @@ jobs:
           VER="v2.0.${{ github.run_number }}"
           echo "VERSION=$VER" >> $GITHUB_ENV
           echo "BUILD_ID=${{ github.run_number }}" >> $GITHUB_ENV
+          echo "VERSION = \"$VER\"" > _version.py
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip
+        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip openpyxl
 
       - name: Download ChromeDriver (Windows)
         shell: pwsh
@@ -54,6 +55,7 @@ jobs:
           pyinstaller --onedir --windowed --name "遵农商_抖音客服助手" `
             --add-data "config.json;." `
             --add-data "worker.py;." `
+            --add-data "_version.py;." `
             --add-data "replied_records;replied_records" `
             --add-data "chrome_profiles;chrome_profiles" `
             --add-data "comment_data;comment_data" `
