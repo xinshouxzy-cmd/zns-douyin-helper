@@ -315,13 +315,25 @@ class AccountWorker(QThread):
             if fn in rec.get("pm_fps", []): return
 
             self.L(f'💬 新私信: "{fn}"', "white")
-            time.sleep(2)
+            time.sleep(1)
+            # 提取对方最后一条消息（v42.1 格式需要）
+            first_msg = self._js("""
+                let containers = document.querySelectorAll('[class*="MessageItemTextcontainer"]');
+                if (!containers.length) return '';
+                let last = containers[containers.length-1];
+                let spans = last.querySelectorAll('[class*="TextMessageTextpureText"]');
+                let text = '';
+                spans.forEach(s => { text += s.textContent; });
+                return text.trim();
+            """) or ""
+            time.sleep(1)
             if self.pm_text and self._send_pm_reply(self.pm_text):
                 self._last_reply[fn] = now
                 rec["pm_fps"].append(fn)
                 rec.setdefault("pm_records", []).append({
                     "nickname": fn,
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "contact_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "first_msg": first_msg[:200],
                     "reply_text": self.pm_text
                 })
                 save_replied(self.name, rec)
