@@ -30,7 +30,7 @@ except Exception:
 APP_TITLE = f"遵农商·抖音客服助手 {VERSION} — 辛振宇"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_PM_REPLY = "遵义地区政策了解，留下☎️"
-DEFAULT_CMT_REPLY = "谢谢评论，咨询请俬訫"
+DEFAULT_CMT_REPLY = "具体抖音✉️"
 PM_POLL = 5
 CMT_POLL = 30
 

@@ -163,6 +163,10 @@ class AccountWorker(QThread):
                 raise
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument(f"--user-data-dir={self.profile}")
+        opt.add_argument("--disable-backgrounding-occluded-windows")
+        opt.add_argument("--disable-renderer-backgrounding")
+        opt.add_argument("--disable-features=TranslateUI")
+        opt.add_argument("--force-device-scale-factor=1")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
         opt.add_experimental_option("useAutomationExtension", False)
         opt.add_experimental_option("detach", True)
@@ -190,10 +194,12 @@ class AccountWorker(QThread):
         return d
 
     def _switch_tab(self, idx):
+        """切换标签页后立即最小化，避免抢焦点"""
         try:
             hs = self._d.window_handles
             if idx < len(hs):
                 self._d.switch_to.window(hs[idx])
+                self._minimize_after()
         except:
             pass
 
@@ -375,7 +381,21 @@ class AccountWorker(QThread):
     # ═══════════ 评论回复（Selenium ActionChains = 真实鼠标点击） ═══════════
 
     def _cmt_click_at(self, x, y, retries=3):
-        """用 ActionChains 模拟真实鼠标点击（视口绝对坐标）"""
+        """点击坐标 - JS优先（不抢窗口焦点），失败才用ActionChains"""
+        # 方法1: JS elementFromPoint（最静默，不抢前台窗口）
+        for i in range(retries):
+            try:
+                result = self._d.execute_script("""
+                    var el = document.elementFromPoint(arguments[0], arguments[1]);
+                    if (el) { el.click(); return 'ok'; }
+                    return 'null';
+                """, x, y)
+                if result == "ok":
+                    time.sleep(0.6)
+                    return True
+            except:
+                time.sleep(0.5)
+        # 方法2: ActionChains 兜底（可能短暂抢焦点）
         try:
             body = self._d.find_element(By.TAG_NAME, "body")
             cx, cy = self._d.execute_script("""
@@ -383,17 +403,34 @@ class AccountWorker(QThread):
                 return [r.left + r.width/2, r.top + r.height/2];
             """)
             ox, oy = int(x - cx), int(y - cy)
-            for i in range(retries):
-                try:
-                    ActionChains(self._d, duration=0) \
-                        .move_to_element_with_offset(body, ox, oy) \
-                        .click().perform()
-                    return True
-                except:
-                    time.sleep(1)
-            return False
+            ActionChains(self._d, duration=0) \
+                .move_to_element_with_offset(body, ox, oy) \
+                .click().perform()
+            time.sleep(0.6)
+            return True
         except:
             return False
+
+    def _minimize_after(self):
+        """操作完成后把浏览器最小化，释放焦点给用户"""
+        try:
+            self._d.minimize_window()
+        except:
+            pass
+
+    def _reload_config(self):
+        """运行时重新读取配置，支持实时开关私信/评论"""
+        try:
+            cfg = load_config()
+            for ac in cfg.get("accounts", []):
+                if ac.get("name") == self.name:
+                    self.pm_on = ac.get("pm_enabled", True)
+                    self.pm_text = ac.get("pm_reply", self.pm_text)
+                    self.cmt_on = ac.get("comment_enabled", True)
+                    self.cmt_text = ac.get("comment_reply", self.cmt_text)
+                    break
+        except:
+            pass
 
     def _cmt_js(self, code):
         try:
@@ -438,33 +475,63 @@ class AccountWorker(QThread):
             # 加载录制的坐标（每次运行时做一次缩放）
             pos = self._cmt_load_positions()
 
-            # ====== 1. 点击通知图标（坐标优先） ======
+            # ====== 1. 点击通知图标（JS多策略 → 坐标兜底） ======
             self.L("🔔 点击通知...", "white")
-            p = pos.get("1_通知图标") if pos else None
             clicked = False
-            if p:
-                clicked = self._cmt_click_at(p["x"], p["y"])
-            if not clicked:
-                # JS 兜底
-                found = self._cmt_js("""
-                    var icons = document.querySelectorAll('header [class*="icon"]');
-                    var best = null, bx = -1;
-                    for (var i = 0; i < icons.length; i++) {
-                        var r = icons[i].getBoundingClientRect();
-                        if (r.width >= 16 && r.width <= 70 && r.height >= 16 && r.height <= 70
-                            && r.x > window.innerWidth * 0.5 && r.x > bx && r.y < 100) {
-                            best = icons[i]; bx = r.x;
-                        }
+            # 策略A: JS 多选择器查找通知铃铛图标
+            found = self._cmt_js("""
+                // 尝试多种选择器查找通知入口
+                var candidates = [];
+                var trialSelectors = [
+                    'header img[src*="notification"]', 'header img[src*="bell"]',
+                    'header img[src*="notice"]', 'header img[alt*="消息"]',
+                    'header img[alt*="通知"]', 'header img[alt*="消息通知"]',
+                    'div[class*="notice"] img', 'div[class*="Notify"] img',
+                    'div[class*="noti"] img'
+                ];
+                for (var s = 0; s < trialSelectors.length; s++) {
+                    try {
+                        var el = document.querySelector(trialSelectors[s]);
+                        if (el) { candidates.push(el); }
+                    } catch(e) {}
+                }
+                // 再尝试通用图标查找：header中右半区域的图标
+                var icons = document.querySelectorAll('header [class*="icon"], header img, header svg');
+                for (var i = 0; i < icons.length; i++) {
+                    var r = icons[i].getBoundingClientRect();
+                    if (r.width >= 16 && r.width <= 80 && r.height >= 16 && r.height <= 80
+                        && r.x > window.innerWidth * 0.45 && r.y < 100) {
+                        candidates.push(icons[i]);
                     }
-                    if (!best) return null;
-                    var r = best.getBoundingClientRect();
-                    return {x: r.x + r.width/2, y: r.y + r.height/2};
-                """)
-                if found:
-                    self._cmt_click_at(found["x"], found["y"])
-                else:
-                    self.L("⚠ 未找到通知图标", "yellow")
-                    return
+                }
+                // 选最靠右的（通知铃铛通常在右侧）
+                var best = null, bx = -1;
+                for (var j = 0; j < candidates.length; j++) {
+                    var rr = candidates[j].getBoundingClientRect();
+                    if (rr.x > bx && rr.width > 0 && rr.height > 0) { best = candidates[j]; bx = rr.x; }
+                }
+                if (!best) return null;
+                var r = best.getBoundingClientRect();
+                return {x: r.x + r.width/2, y: r.y + r.height/2};
+            """)
+            if found:
+                clicked = self._cmt_click_at(found["x"], found["y"])
+            # 策略B: 坐标兜底
+            if not clicked:
+                p = pos.get("1_通知图标") if pos else None
+                if p:
+                    # 尝试坐标附近 ±10px 范围
+                    for dx in [0, -5, 5, -10, 10]:
+                        for dy in [0, -5, 5, -10, 10]:
+                            if self._cmt_click_at(p["x"] + dx, p["y"] + dy):
+                                clicked = True
+                                break
+                        if clicked: break
+                if not clicked and p:
+                    self._cmt_click_at(p["x"], p["y"])
+            if not clicked:
+                self.L("⚠ 未找到通知图标", "yellow")
+                return
             time.sleep(3)
 
             # ====== 2. 点击「全部消息」（坐标优先） ======
@@ -737,6 +804,9 @@ class AccountWorker(QThread):
             self.L(f"✅ 就绪 | 轮换模式: {CMT_PHASE}s评论→{PM_PHASE}s私信→{REST_PHASE}s休息", "green")
 
             while self._run:
+                # 运行时热加载配置（支持随时开关私信/评论）
+                self._reload_config()
+
                 # ── 评论阶段 (30s) ──
                 if self.cmt_on:
                     self.status.emit(self.name, f"🔍 评论检测中... ({CMT_PHASE}s)")
@@ -747,6 +817,7 @@ class AccountWorker(QThread):
                         el = time.time() - ts
                         if el < 8:
                             time.sleep(8 - el)
+                    self._minimize_after()
 
                 # ── 私信阶段 (20s) ──
                 if self.pm_on:
@@ -758,6 +829,7 @@ class AccountWorker(QThread):
                         el = time.time() - ts
                         if el < 4:
                             time.sleep(4 - el)
+                    self._minimize_after()
 
                 # ── 休息 (10s) ──
                 self.status.emit(self.name, f"⏸ 休息中... ({REST_PHASE}s)")
