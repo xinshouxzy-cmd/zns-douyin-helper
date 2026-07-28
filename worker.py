@@ -492,61 +492,106 @@ class AccountWorker(QThread):
             # 加载录制的坐标（每次运行时做一次缩放）
             pos = self._cmt_load_positions()
 
-            # ====== 1. 点击通知图标（JS多策略 → 坐标兜底 → 校验弹窗） ======
-            self.L("🔔 点击通知...", "white")
-            clicked = False
-            found = self._cmt_js("""
-                var candidates = [];
-                var trialSelectors = [
-                    'header img[src*="notification"]', 'header img[src*="bell"]',
-                    'header img[src*="notice"]', 'header img[alt*="消息"]',
-                    'header img[alt*="通知"]', 'header img[alt*="消息通知"]',
-                    'div[class*="notice"] img', 'div[class*="Notify"] img',
-                    'div[class*="noti"] img'
-                ];
-                for (var s = 0; s < trialSelectors.length; s++) {
-                    try { var el = document.querySelector(trialSelectors[s]); if (el) candidates.push(el); } catch(e) {}
-                }
-                var icons = document.querySelectorAll('header [class*="icon"], header img, header svg');
-                for (var i = 0; i < icons.length; i++) {
-                    var r = icons[i].getBoundingClientRect();
-                    if (r.width >= 16 && r.width <= 80 && r.height >= 16 && r.height <= 80 && r.x > window.innerWidth * 0.45 && r.y < 100) { candidates.push(icons[i]); }
-                }
-                var best = null, bx = -1;
-                for (var j = 0; j < candidates.length; j++) {
-                    var rr = candidates[j].getBoundingClientRect();
-                    if (rr.x > bx && rr.width > 0 && rr.height > 0) { best = candidates[j]; bx = rr.x; }
-                }
-                if (!best) return null;
-                var r = best.getBoundingClientRect();
-                return {x: r.x + r.width/2, y: r.y + r.height/2};
-            """)
-            if found:
-                clicked = self._cmt_click_at(found["x"], found["y"])
-            if not clicked:
-                p = pos.get("1_通知图标") if pos else None
-                if p:
-                    for dx in [0, -5, 5, -10, 10]:
-                        for dy in [0, -5, 5, -10, 10]:
-                            if self._cmt_click_at(p["x"] + dx, p["y"] + dy):
-                                clicked = True; break
-                        if clicked: break
-            if not clicked:
-                self.L("⚠ 未找到通知图标", "yellow"); return
-            time.sleep(2)
-            # ═══ 校验1：通知面板是否真的弹出了 ═══
-            verified = self._cmt_js("""
-                if (window.location.href.indexOf('message') >= 0 || window.location.href.indexOf('notice') >= 0) return 'ok';
-                var panels = document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[class*="menu"],[role="dialog"]');
-                for (var i = 0; i < panels.length; i++) {
-                    var r = panels[i].getBoundingClientRect();
-                    if (r.width > 120 && r.height > 120) return 'ok';
-                }
-                return '';
-            """)
-            self.L(f"  {'✓' if verified=='ok' else '❌'} 通知面板{'已' if verified=='ok' else '未'}弹出", "white" if verified=="ok" else "yellow")
+            # ====== 1. 点击通知图标（多策略重试，失败不往下走） ======
+            verified = ''
+            p_notify = pos.get("1_通知图标") if pos else None
+
+            for attempt in range(3):
+                if attempt > 0:
+                    self.L(f"  重试通知点击 ({attempt+1}/3)...", "yellow")
+                self.L("🔔 点击通知...", "white")
+
+                # 策略A: JS 搜索通知图标 + JS点击
+                found = self._cmt_js("""
+                    var candidates = [];
+                    var selectors = [
+                        'header img[src*="notification"]', 'header img[src*="bell"]',
+                        'header img[src*="notice"]', 'header img[alt*="消息"]',
+                        'header img[alt*="通知"]', 'div[class*="notice"] img',
+                        'div[class*="Notify"] img', 'div[class*="noti"] img'
+                    ];
+                    for (var s = 0; s < selectors.length; s++) {
+                        try { var el = document.querySelector(selectors[s]); if (el) candidates.push(el); } catch(e) {}
+                    }
+                    var icons = document.querySelectorAll('header [class*="icon"], header img, header svg, nav img, nav svg');
+                    for (var i = 0; i < icons.length; i++) {
+                        var r = icons[i].getBoundingClientRect();
+                        if (r.width >= 14 && r.width <= 60 && r.height >= 14 && r.height <= 60
+                            && r.x > window.innerWidth * 0.4 && r.y < 100) { candidates.push(icons[i]); }
+                    }
+                    var best = null, bx = -1;
+                    for (var j = 0; j < candidates.length; j++) {
+                        var rr = candidates[j].getBoundingClientRect();
+                        if (rr.x > bx && rr.width > 0 && rr.height > 0) { best = candidates[j]; bx = rr.x; }
+                    }
+                    if (!best) return null;
+                    var r = best.getBoundingClientRect();
+                    // 策略A: dispatchEvent 完整鼠标事件序列（比 .click() 更接近真实点击）
+                    var opts = {bubbles:true, cancelable:true, view:window,
+                                clientX: r.x+r.width/2, clientY: r.y+r.height/2};
+                    best.dispatchEvent(new MouseEvent('mousedown', opts));
+                    best.dispatchEvent(new MouseEvent('mouseup', opts));
+                    best.dispatchEvent(new MouseEvent('click', opts));
+                    best.focus();
+                    return {x: r.x + r.width/2, y: r.y + r.height/2};
+                """)
+                if found:
+                    self._cmt_click_at(found["x"], found["y"])
+
+                # 策略B: 录制坐标兜底（dispatchEvent）
+                if p_notify:
+                    for dx in [0, -3, 3, -8, 8]:
+                        for dy in [0, -3, 3, -8, 8]:
+                            if attempt > 0 or not found:
+                                self._cmt_click_at(p_notify["x"] + dx, p_notify["y"] + dy)
+
+                # 策略C: ActionChains 真实点击（通知图标通常需要真实鼠标事件）
+                if p_notify and (attempt >= 1):
+                    self.L(f"  使用ActionChains兜底 @ ({p_notify['x']}, {p_notify['y']})", "white")
+                    try:
+                        body = self._d.find_element(By.TAG_NAME, "body")
+                        cx, cy = self._d.execute_script("""
+                            const r = document.body.getBoundingClientRect();
+                            return [r.left + r.width/2, r.top + r.height/2];
+                        """)
+                        ActionChains(self._d, duration=0) \
+                            .move_to_element_with_offset(body, int(p_notify["x"]-cx), int(p_notify["y"]-cy)) \
+                            .click().perform()
+                    except:
+                        pass
+
+                time.sleep(2.5)
+
+                # ═══ 校验：通知面板是否真的弹出了 ═══
+                verified = self._cmt_js("""
+                    if (window.location.href.indexOf('message') >= 0 || window.location.href.indexOf('notice') >= 0) return 'ok';
+                    var panels = document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[class*="menu"],[role="dialog"]');
+                    for (var i = 0; i < panels.length; i++) {
+                        var r = panels[i].getBoundingClientRect();
+                        if (r.width > 120 && r.height > 120) return 'ok';
+                    }
+                    // 补充：检查是否有明显新增的可见区域（可能是弹窗的任何形式）
+                    var allDivs = document.querySelectorAll('div');
+                    for (var j = 0; j < allDivs.length; j++) {
+                        var rr = allDivs[j].getBoundingClientRect();
+                        var style = window.getComputedStyle(allDivs[j]);
+                        if (rr.width > 150 && rr.height > 150 && style.position === 'fixed' && style.zIndex > 10) return 'ok';
+                    }
+                    return '';
+                """)
+                self.L(f"  {'✓' if verified=='ok' else '❌'} 通知面板{'已' if verified=='ok' else '未'}弹出", "white" if verified=="ok" else "yellow")
+
+                if verified == "ok":
+                    break
+                # 如果没弹出，回收主页再试
+                if attempt < 2:
+                    self._d.get(DY_HOME)
+                    time.sleep(2)
+
             if verified != "ok":
-                time.sleep(2)
+                self.L("❌ 通知面板3次重试均失败，跳过本轮评论", "yellow")
+                self._d.get(DY_HOME); time.sleep(3)
+                return   # ← 关键：不往下走！
 
             # ====== 2. 点击「全部消息」 → 校验 ======
             self.L("📋 点击「全部消息」...", "white")
@@ -576,6 +621,9 @@ class AccountWorker(QThread):
                 return '';
             """)
             self.L(f"  {'✓' if page_ok=='ok' else '⚠'} 消息列表{'已' if page_ok=='ok' else '验证不确定'}", "white" if page_ok=="ok" else "yellow")
+            if page_ok != "ok":
+                self.L("  ❌ 未进入消息列表，无法继续评论流程", "yellow")
+                self._d.get(DY_HOME); time.sleep(3); return
 
             # ====== 3. 点击「评论」筛选 → 校验 ======
             self.L("💬 找「评论」筛选...", "white")
@@ -616,6 +664,9 @@ class AccountWorker(QThread):
                 return '';
             """)
             self.L(f"  {'✓' if cmt_loaded=='ok' else '⚠' if cmt_loaded=='maybe' else '❌'} 评论列表{'已加载' if cmt_loaded=='ok' else '未确定' if cmt_loaded=='maybe' else '未加载'}", "white" if cmt_loaded in ("ok","maybe") else "yellow")
+            if cmt_loaded not in ("ok", "maybe"):
+                self.L("  ❌ 评论列表未加载，无法提取评论", "yellow")
+                self._d.get(DY_HOME); time.sleep(3); return
 
             # ====== 4. 提取第一条真实评论（DOM结构识别，不依赖录制坐标） ======
             self.L("🔍 提取第一条评论...", "white")
