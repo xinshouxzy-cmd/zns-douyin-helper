@@ -7,7 +7,7 @@
 - 分时轮流：30s评论 → 20s私信 → 10s休息
 """
 
-import os, sys, json, time, re, subprocess, traceback, threading
+import os, sys, json, time, re, subprocess, traceback
 from datetime import datetime
 from threading import Event
 
@@ -102,7 +102,8 @@ class AccountWorker(QThread):
         self._positions = None  # 校准后的坐标 dict
         self._calibration_mode = False  # 是否处于手动校准模式
         self._calib_event = Event()     # 校准模式下的步骤等待事件
-        self._start_calib.connect(self._start_calib_thread)  # GUI触发→启动Python线程执行校准
+        self._request_calibration = False  # GUI 请求校准标志，worker 轮询检测
+        self._start_calib.connect(self._on_start_calib)  # GUI触发→设置标志，worker轮询执行
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
@@ -1291,10 +1292,10 @@ class AccountWorker(QThread):
             self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(60s)，未检测到5连点", "yellow")
             return None
 
-    def _start_calib_thread(self):
-        """在 Python 原生线程中启动校准流程，彻底避免 Qt 线程亲和性导致的 GUI 阻塞。"""
-        t = threading.Thread(target=self.run_calibration_flow, daemon=True)
-        t.start()
+    def _on_start_calib(self):
+        """GUI 请求校准 → 设置标志，由 worker 的轮询循环在自身线程中执行。"""
+        self._request_calibration = True
+        self.L("📐 收到校准请求，等待 worker 线程处理...", "white")
 
     def run_calibration_flow(self):
         """在独立线程中运行完整校准流程（3步），通过信号通知 GUI，不阻塞主线程。"""
@@ -1389,8 +1390,11 @@ class AccountWorker(QThread):
             self.L("📱 请扫码登录，完成后点击「确认已登录」", "white")
             self.L("💡 如需手动校准评论坐标，请先点击「📐 手动校准」再确认登录", "white")
 
-            # 轮询等待登录确认（改为非阻塞，支持校准模式中断）
+            # 轮询等待登录确认（支持校准模式中断）
             while self._run and not self._login_ok.is_set():
+                if self._request_calibration:
+                    self._request_calibration = False
+                    self.run_calibration_flow()  # 在 worker 自身线程执行，WebDriver 线程安全
                 time.sleep(0.3)
 
             if not self._run: return
