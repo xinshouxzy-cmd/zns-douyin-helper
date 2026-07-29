@@ -1,11 +1,7 @@
-VERSION = "v2.0.61"
-# 改动: 修复窗口抢占 + 定位准确性 + 安全加固
-#       (1) 移除所有 ActionChains 真实鼠标点击 → 纯JS事件
-#       (2) 通知按钮：ActionChains → JS hover + JS click
-#       (3) _cmt_click_at 零 ActionChains
-#       (4) 坐标加载增加 devicePixelRatio 感知
-#       (5) 侦察兵失败兜底录制坐标
-#       (6) GUI「重新校准」按钮（线程安全）
-#       (7) Chrome 增加 CalculateNativeWinOcclusion 禁用
-#       (8) 安全加固：execute_script 改用 arguments 参数化（防注入）
-#       (9) 安全加固：_append_log HTML 转义（防UI欺骗）
+VERSION = "v2.0.62"
+# v2.0.62: 修复评论流程"全部消息"点击后跳转失败 (Codex)
+#   BUG: 全部消息点击后通知面板关闭 — 第二轮重试时面板已消失，流程中断
+#   FIX: 面板关闭时自动重新点击通知按钮重新打开，不放弃
+#   BUG: 侦察兵 elementFromPoint 扫描返回0按钮 — 抖音顶栏图标无法命中
+#   FIX: elementFromPoint 失败后增加 DOM 元素搜索兜底 (header/body 顶栏区域)
+#   (基于 v2.0.61: 窗口抢占焦点修复)

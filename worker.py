@@ -644,11 +644,26 @@ class AccountWorker(QThread):
                     panel_ok = self._cmt_js("""
                         var panels=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[role="dialog"]');
                         for(var i=0;i<panels.length;i++){var r=panels[i].getBoundingClientRect();if(r.width>120&&r.height>120)return'ok';}
+                        // 也检测页面URL是否已到消息页面
+                        if(window.location.href.indexOf('/message')>=0 || window.location.href.indexOf('/notice')>=0) return 'url';
                         return'';
                     """)
-                    if panel_ok != 'ok':
-                        self.L("  通知面板已关闭，无法继续", "yellow")
-                        break
+                    if panel_ok == '':
+                        self.L("  通知面板已关闭，重新点击通知...", "yellow")
+                        # v2.0.62: 不放弃，重新打开通知面板
+                        self._cmt_click_at(nx, ny)
+                        time.sleep(2.5)
+                        # 再检查一次
+                        panel_ok2 = self._cmt_js("""
+                            var panels=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[role="dialog"]');
+                            for(var i=0;i<panels.length;i++){var r=panels[i].getBoundingClientRect();if(r.width>120&&r.height>120)return'ok';}
+                            return'';
+                        """)
+                        if panel_ok2 != 'ok':
+                            self.L("  ❌ 重新打开通知面板失败", "yellow")
+                            break
+                        self.L("  ✓ 通知面板已重新打开", "green")
+                        time.sleep(1.5)
 
                 # 找到「全部消息」元素
                 all_msg_el = None
@@ -1004,25 +1019,30 @@ class AccountWorker(QThread):
                 self.L("⚠ 未找到有效回复按钮", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
-            # ====== 7. 输入回复 ======
-            info = self._cmt_js("""
-                var el = document.querySelector('[contenteditable="true"]');
-                if (!el) return null;
-                var r = el.getBoundingClientRect();
-                if (r.width > 50 && r.height > 10) {
+            # ====== 7. 输入回复（优先 JS 直接填充，不依赖剪贴板/系统级操作） ======
+            input_ok = self._d.execute_script("""
+                (function(text) {
+                    var el = document.querySelector('[contenteditable="true"]');
+                    if (!el) return false;
                     el.setAttribute('data-cmt-input', '1');
-                    return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
-                }
-                return null;
-            """)
-            if info:
-                self._cmt_click_at(info["x"], info["y"])
-                time.sleep(0.5)
-            try:
-                edt = self._d.find_element(By.CSS_SELECTOR, '[data-cmt-input="1"]')
-                self._paste(self.cmt_text, edt)
-            except:
-                self._paste(self.cmt_text)
+                    el.focus();
+                    el.click();
+                    el.textContent = text;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    return true;
+                })(arguments[0]);
+            """, self.cmt_text)
+            if not input_ok:
+                # 剪贴板方式兜底（可能抢焦点）
+                self.L("⚠ 未找到输入框，尝试剪贴板方式...", "yellow")
+                try:
+                    edt = self._d.find_element(By.CSS_SELECTOR, '[contenteditable="true"]')
+                    self._paste(self.cmt_text, edt)
+                except:
+                    self._paste(self.cmt_text)
+            else:
+                self.L("  ✓ 回复文本已输入(JS)", "white")
             time.sleep(1)
 
             # ====== 8. 发送（优先 JS 自动检测，录制坐标仅兜底）=====

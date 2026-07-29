@@ -296,7 +296,55 @@ class NotificationScout:
         self._log(f"[侦察兵]   扫描到 {len(buttons)} 个按钮/元素")
 
         if not buttons:
-            self._log("[侦察兵] ❌ 顶栏未找到任何元素")
+            self._log("[侦察兵] ⚠ elementFromPoint 未找到元素，尝试 DOM 搜索...")
+            # v2.0.62: elementFromPoint 失败后进行 DOM 搜索兜底
+            fallback = self._d.execute_script("""
+                (function() {
+                    var results = [];
+                    var topH = Math.floor(window.innerHeight * 0.08);
+                    // 搜索顶栏区域内的所有可见元素
+                    var all = document.querySelectorAll('header *');
+                    if (!all.length) {
+                        // 如果没有 header，搜索整个 body 顶部区域
+                        all = document.querySelectorAll('body *');
+                    }
+                    var seen = {};
+                    for (var i = 0; i < all.length; i++) {
+                        var el = all[i];
+                        var r = el.getBoundingClientRect();
+                        // 只在顶栏区域
+                        if (r.top < 0 || r.top > topH || r.bottom < 0) continue;
+                        if (r.width < 8 || r.height < 8) continue;
+                        var tag = el.tagName.toLowerCase();
+                        if (tag === 'html' || tag === 'body' || tag === 'head' || tag === 'script' || tag === 'style') continue;
+                        var cx = Math.round(r.left + r.width / 2);
+                        var cy = Math.round(r.top + r.height / 2);
+                        var sig = cx + ',' + cy;
+                        if (seen[sig]) continue;
+                        seen[sig] = true;
+                        var ariaLabel = (el.getAttribute('aria-label') || '').slice(0, 40);
+                        var titleAttr = (el.getAttribute('title') || '').slice(0, 40);
+                        var text = (el.textContent || '').trim().slice(0, 40);
+                        results.push({
+                            center_x: cx, center_y: cy,
+                            left: Math.round(r.left), right: Math.round(r.right),
+                            top: Math.round(r.top), bottom: Math.round(r.bottom),
+                            tag: tag, aria_label: ariaLabel,
+                            title_attr: titleAttr, text: text,
+                            classes: (el.className || '').toString().slice(0, 10)
+                        });
+                    }
+                    return JSON.stringify(results);
+                })();
+            """)
+            try:
+                fallback_buttons = json.loads(fallback) if fallback else []
+                self._log(f"[侦察兵]   DOM 搜索找到 {len(fallback_buttons)} 个元素")
+                if fallback_buttons:
+                    return fallback_buttons
+            except:
+                pass
+            self._log("[侦察兵] ❌ 顶栏未找到任何元素（elementFromPoint + DOM 搜索均失败）")
             return None
 
         # 打印每个按钮的详情（调试用）
