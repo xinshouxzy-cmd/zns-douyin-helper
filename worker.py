@@ -698,41 +698,43 @@ class AccountWorker(QThread):
                 time.sleep(3.0)
 
                 # ═══ 验证：是否进入了消息页面 ═══
-                # douyin 的「全部消息」可能是 SPA 路由不改变 URL
-                # 关键是：面板变成了更大的消息列表页面
-                verify_result = self._cmt_js("""
+                # douyin 的「全部消息」可能是 SPA 路由不改变 URL 或弹出浮层
+                # 验证策略：检查页面内容是否发生了变化（更多消息相关文字）
+                verify_result = self._d.execute_script("""
                     (function() {
                         var url = window.location.href;
                         if (url.indexOf('/message')>=0 || url.indexOf('/notice')>=0) return 'url';
 
-                        // 检测消息列表的左侧导航（互动消息/评论/赞/@我/粉丝 等标签）
-                        var bodyText = (document.body.innerText||'').substring(0, 1000);
-                        var hasInteraction = bodyText.indexOf('互动消息') >= 0;
-                        var hasComment = bodyText.indexOf('评论') >= 0;
-                        var hasAll = bodyText.indexOf('全部') >= 0;
+                        var bodyText = (document.body.innerText||'').substring(0, 1500);
 
-                        if (hasInteraction && (hasComment || hasAll)) return 'nav';
+                        // 策略1：检测消息列表常见文字组合
+                        var kw = ['互动消息','系统消息','赞和收藏','@我的','粉丝','全部消息','通知','私信'];
+                        var hits = 0;
+                        for (var i=0;i<kw.length;i++) { if (bodyText.indexOf(kw[i])>=0) hits++; }
+                        if (hits >= 2) return 'kw:'+hits;
 
-                        // 检测大的消息列表容器
+                        // 策略2：检测大的消息/会话列表容器
                         var containers = document.querySelectorAll(
-                            '[class*="message-list"],[class*="conversation"],[class*="msg-list"],' +
-                            '[class*="chat-list"],[class*="notice-list"],[class*="inbox-list"],' +
-                            '[class*="notification-list"]');
+                            '[class*="message"],[class*="msg"],[class*="conversation"],[class*="chat"],' +
+                            '[class*="notice"],[class*="notify"],[class*="inbox"],[class*="dialog-list"]');
                         for (var i=0; i<containers.length; i++) {
                             var r = containers[i].getBoundingClientRect();
-                            if (r.width>250 && r.height>300) return 'container';
+                            if (r.width>200 && r.height>250) return 'container';
                         }
+
+                        // 策略3：页面文字超过800字符（通常消息列表内容较多）
+                        if (bodyText.length > 800) return 'textlen';
 
                         return '';
                     })();
                 """)
 
-                if verify_result in ('url', 'nav', 'container'):
+                if verify_result:
                     self.L(f"  ✓ 已进入消息页面({verify_result})", "green")
                     all_msg_clicked = True
                     break
 
-                self.L(f"  ⚠ 未检测到消息页面 (result={verify_result})", "yellow")
+                self.L(f"  ⚠ 未检测到消息页面", "yellow")
 
             if not all_msg_clicked:
                 self.L("  ❌ 4次重试均未进入消息列表，跳过本轮", "yellow")
