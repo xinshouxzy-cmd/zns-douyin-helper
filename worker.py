@@ -1244,7 +1244,7 @@ class AccountWorker(QThread):
 
         time.sleep(0.5)
 
-        # 注入 5 连点检测 JS（使用 execute_async_script 等待异步回调）
+        # 注入 5 连点检测 JS（拦截点击避免页面乱跳，确认后自动补一发真实点击触发导航）
         result = self._d.execute_async_script("""
             var done = arguments[arguments.length - 1];
             var clicks = [];
@@ -1265,6 +1265,9 @@ class AccountWorker(QThread):
                     }
                     if (allClose) {
                         document.removeEventListener('click', clickHandler, true);
+                        // 自动补一发真实点击，触发页面导航（如打开通知面板/进入消息页）
+                        var el = document.elementFromPoint(avgX, avgY);
+                        if (el) el.click();
                         done({x: Math.round(avgX), y: Math.round(avgY), confirmed: true});
                     }
                 }

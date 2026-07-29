@@ -1,8 +1,6 @@
-VERSION = "v2.2.0"
-# v2.2.0: 校准系统简化 — 7步→3步 + 浏览器5连点自动确认 (Codex)
-#   - calibration_data.py: CALIBRATION_STEPS 7→3（通知铃铛/全部消息/评论筛选）
-#   - worker.py: do_calibration_step 改为5连点检测（execute_async_script），超时60s→120s
-#   - main.py: CalibrationWizard 3步简化UI，移除「已点击下一步」「跳过」按钮
-#   - 移除运行时「重新校准」按钮和 recal_done/recalibrate_now 机制
-#   - 校准入口统一在确认登录面板旁
-#   (基于 v2.1.0)
+VERSION = "v2.2.1"
+# v2.2.1: 修复校准中5连点拦截导致页面无法导航的问题 (Codex)
+#   - worker.py: do_calibration_step 确认后自动补一发真实点击触发页面导航
+#   - 校准坐标优先用于第2步全部消息和第3步评论点击
+#   - CalibrationWizard 保存后自动关闭对话框不再卡住
+#   (基于 v2.2.0)
