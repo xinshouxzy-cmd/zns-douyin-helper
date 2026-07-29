@@ -480,7 +480,6 @@ class CalibrationWizard(QDialog):
 
     def _finish(self):
         self.lbl_status.setText("💾 正在保存...")
-        self.btn_cancel.setVisible(False)
         QApplication.processEvents()
 
         # 断开信号
@@ -492,41 +491,29 @@ class CalibrationWizard(QDialog):
 
         # 保存
         ok = self.worker.exit_calibration_mode(self.captured)
+
         if ok:
             self.lbl_step_title.setText("🎉 校准完成！")
             self.lbl_desc.setText(f"已保存 {len(self.captured)}/3 个步骤的坐标。\n本机所有账号均可使用此校准数据。")
             self.lbl_tip.setVisible(False)
             self._update_progress(3)
+            self.lbl_status.setText("✅ 保存成功，可以关闭窗口")
+
+            QMessageBox.information(self, "校准完成",
+                f"✅ 评论坐标校准完成！\n\n"
+                f"已保存 {len(self.captured)}/3 个步骤。\n"
+                f"本机所有账号均可共享使用。\n\n"
+                f"现在可以点击「确认已登录」开始自动运行。")
         else:
             self.lbl_step_title.setText("⚠ 校准不完整")
             self.lbl_desc.setText(f"仅捕获 {len(self.captured)}/3 个步骤，至少需要3步。\n请重新校准。")
+            self.lbl_status.setText("⚠ 校准未保存")
 
-        btn_close = QPushButton("关闭")
-        btn_close.setStyleSheet(_btn_primary())
-        btn_close.setFixedHeight(38)
-        btn_close.clicked.connect(self.accept)
-        # 找到按钮布局并添加
-        for i in range(self.layout().count()):
-            item = self.layout().itemAt(i)
-            if isinstance(item, QHBoxLayout) and item.itemAt(0) and isinstance(item.itemAt(0).widget(), QWidget):
-                # 在 stretch 之前插入
-                pass
+            QMessageBox.warning(self, "校准未完成",
+                f"仅捕获 {len(self.captured)}/3 个步骤，至少需要3步。\n请重新校准。")
 
-        QMessageBox.information(self, "校准完成",
-            f"✅ 评论坐标校准完成！\n\n"
-            f"已保存 {len(self.captured)}/7 个步骤。\n"
-            f"本机所有账号均可共享使用。\n\n"
-            f"现在可以点击「确认已登录」开始自动运行。")
-
-    def _cancel(self):
-        self._cancelled = True
-        try:
-            self.worker.calib_step.disconnect(self._on_calib_step_signal)
-            self.worker.calib_captured.disconnect(self._on_captured_signal)
-        except:
-            pass
-        self.worker._calibration_mode = False
-        self.worker._calib_event.set()
+        # 关闭对话框
+        self.accept()
         self.reject()
 
 

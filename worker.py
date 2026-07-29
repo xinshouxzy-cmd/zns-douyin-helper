@@ -639,104 +639,22 @@ class AccountWorker(QThread):
             """)
             self.L(f"  [调试] 全部消息={debug_info.get('hasAllMsg')}, 评论={debug_info.get('hasComment')}, 赞={debug_info.get('hasLike')}, @我={debug_info.get('hasAt')}")
 
-            # ── 找「全部消息」并用纯JS点击 ──
+            # ── 优先使用校准坐标点击「全部消息」 ──
             all_msg_clicked = False
-            for all_try in range(4):
-                if all_try > 0:
-                    self.L(f"  重试「全部消息」({all_try+1}/4)...", "yellow")
-                    time.sleep(1.5)
-
-                # 重新检测通知面板（面板可能被之前的操作关闭了）
-                if all_try > 0:
-                    panel_ok = self._cmt_js("""
-                        var panels=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[role="dialog"]');
-                        for(var i=0;i<panels.length;i++){var r=panels[i].getBoundingClientRect();if(r.width>120&&r.height>120)return'ok';}
-                        // 也检测页面URL是否已到消息页面
-                        if(window.location.href.indexOf('/message')>=0 || window.location.href.indexOf('/notice')>=0) return 'url';
-                        return'';
-                    """)
-                    if panel_ok == '':
-                        self.L("  通知面板已关闭，重新点击通知...", "yellow")
-                        # v2.0.62: 不放弃，重新打开通知面板
-                        self._cmt_click_at(nx, ny)
-                        time.sleep(2.5)
-                        # 再检查一次
-                        panel_ok2 = self._cmt_js("""
-                            var panels=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[role="dialog"]');
-                            for(var i=0;i<panels.length;i++){var r=panels[i].getBoundingClientRect();if(r.width>120&&r.height>120)return'ok';}
-                            return'';
-                        """)
-                        if panel_ok2 != 'ok':
-                            self.L("  ❌ 重新打开通知面板失败", "yellow")
-                            break
-                        self.L("  ✓ 通知面板已重新打开", "green")
-                        time.sleep(1.5)
-
-                # 找到「全部消息」元素
-                all_msg_el = None
-                try:
-                    elements = self._d.find_elements(By.XPATH, "//*[text()='全部消息']")
-                    for el in elements:
-                        r = el.rect
-                        if r['width'] > 40 and r['height'] > 10:
-                            all_msg_el = el
-                            break
-                except:
-                    pass
-
-                if all_msg_el:
-                    try:
-                        self._d.execute_script("arguments[0].scrollIntoView({block:'center'});", all_msg_el)
-                        time.sleep(0.3)
-                        all_msg_el.click()
-                        self.L(f"  点击「全部消息」(WebElement)", "white")
-                    except Exception as e:
-                        self.L(f"  WebElement点击失败: {e}，改用坐标", "yellow")
-                        r = all_msg_el.rect
-                        self._cmt_click_at(r['x'] + r['width']/2, r['y'] + r['height']/2)
-                else:
-                    # JS 找
-                    found_pos = self._cmt_js("""
-                        var els = document.querySelectorAll('div,span,button,a,[role="button"]');
-                        for (var i=0; i<els.length; i++) {
-                            var t = (els[i].textContent||'').trim();
-                            if (t==='全部消息' || t.indexOf('查看全部')>=0) {
-                                var r = els[i].getBoundingClientRect();
-                                if (r.width>40 && r.height>10) {
-                                    els[i].click();
-                                    return {x:r.x+r.width/2, y:r.y+r.height/2, text:t};
-                                }
-                            }
-                        }
-                        return null;
-                    """)
-                    if found_pos:
-                        self._cmt_click_at(found_pos["x"], found_pos["y"])
-                        self.L(f"  JS点击 '{found_pos.get('text','')}' @ ({found_pos['x']:.0f},{found_pos['y']:.0f})", "white")
-                    else:
-                        self.L("  ❌ 未找到「全部消息」元素", "yellow")
-                        break
-
+            cal_allmsg = self._positions.get("2_全部消息") if self._positions else None
+            if cal_allmsg:
+                self.L(f"  校准坐标点击「全部消息」({cal_allmsg['x']},{cal_allmsg['y']})", "white")
+                self._cmt_click_at(cal_allmsg["x"], cal_allmsg["y"])
                 time.sleep(3.0)
-
-                # ═══ 验证：是否进入了消息页面 ═══
-                # douyin 的「全部消息」可能是 SPA 路由不改变 URL 或弹出浮层
-                # 验证策略：检查页面内容是否发生了变化（更多消息相关文字）
                 verify_result = self._d.execute_script("""
                     (function() {
                         var url = window.location.href;
                         if (url.indexOf('/message')>=0 || url.indexOf('/notice')>=0) return 'url';
-
                         var bodyText = (document.body.innerText||'').substring(0, 1500);
-
-                        // 策略1：检测消息/通知面板内是否展开了筛选标签
-                        // 关键是"评论"文字出现 + 面板内存在多个筛选选项
                         var tabKw = ['评论','赞','@我','@我的','粉丝','私信','全部消息','互动消息','系统消息','通知'];
                         var tabHits = 0;
                         for (var i=0;i<tabKw.length;i++) { if (bodyText.indexOf(tabKw[i])>=0) tabHits++; }
                         if (tabHits >= 2) return 'tabs:'+tabHits;
-
-                        // 策略2：检测大的消息/会话列表容器
                         var containers = document.querySelectorAll(
                             '[class*="message"],[class*="msg"],[class*="conversation"],[class*="chat"],' +
                             '[class*="notice"],[class*="notify"],[class*="inbox"],[class*="dialog-list"],' +
@@ -745,20 +663,125 @@ class AccountWorker(QThread):
                             var r = containers[i].getBoundingClientRect();
                             if (r.width>150 && r.height>100) return 'container';
                         }
-
-                        // 策略3：页面文字超过500字符（下拉面板也有一定量文本）
                         if (bodyText.length > 500) return 'textlen';
-
                         return '';
                     })();
                 """)
-
                 if verify_result:
                     self.L(f"  ✓ 已进入消息页面({verify_result})", "green")
                     all_msg_clicked = True
-                    break
+                else:
+                    self.L(f"  校准坐标点击未进入消息页面，改用DOM搜索", "yellow")
 
-                self.L(f"  ⚠ 未检测到消息页面", "yellow")
+            # ── 找「全部消息」并用JS点击 ──
+            if not all_msg_clicked:
+                for all_try in range(4):
+                    if all_try > 0:
+                        self.L(f"  重试「全部消息」({all_try+1}/4)...", "yellow")
+                        time.sleep(1.5)
+
+                    # 重新检测通知面板（面板可能被之前的操作关闭了）
+                    if all_try > 0:
+                        panel_ok = self._cmt_js("""
+                            var panels=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[role="dialog"]');
+                            for(var i=0;i<panels.length;i++){var r=panels[i].getBoundingClientRect();if(r.width>120&&r.height>120)return'ok';}
+                            // 也检测页面URL是否已到消息页面
+                            if(window.location.href.indexOf('/message')>=0 || window.location.href.indexOf('/notice')>=0) return 'url';
+                            return'';
+                        """)
+                        if panel_ok == '':
+                            self.L("  通知面板已关闭，重新点击通知...", "yellow")
+                            # v2.0.62: 不放弃，重新打开通知面板
+                            self._cmt_click_at(nx, ny)
+                            time.sleep(2.5)
+                            # 再检查一次
+                            panel_ok2 = self._cmt_js("""
+                                var panels=document.querySelectorAll('[class*="notice"],[class*="notify"],[class*="popup"],[class*="drawer"],[class*="panel"],[role="dialog"]');
+                                for(var i=0;i<panels.length;i++){var r=panels[i].getBoundingClientRect();if(r.width>120&&r.height>120)return'ok';}
+                                return'';
+                            """)
+                            if panel_ok2 != 'ok':
+                                self.L("  ❌ 重新打开通知面板失败", "yellow")
+                                break
+                            self.L("  ✓ 通知面板已重新打开", "green")
+                            time.sleep(1.5)
+
+                    # 找到「全部消息」元素
+                    all_msg_el = None
+                    try:
+                        elements = self._d.find_elements(By.XPATH, "//*[text()='全部消息']")
+                        for el in elements:
+                            r = el.rect
+                            if r['width'] > 40 and r['height'] > 10:
+                                all_msg_el = el
+                                break
+                    except:
+                        pass
+
+                    if all_msg_el:
+                        try:
+                            self._d.execute_script("arguments[0].scrollIntoView({block:'center'});", all_msg_el)
+                            time.sleep(0.3)
+                            all_msg_el.click()
+                            self.L(f"  点击「全部消息」(WebElement)", "white")
+                        except Exception as e:
+                            self.L(f"  WebElement点击失败: {e}，改用坐标", "yellow")
+                            r = all_msg_el.rect
+                            self._cmt_click_at(r['x'] + r['width']/2, r['y'] + r['height']/2)
+                    else:
+                        # JS 找
+                        found_pos = self._cmt_js("""
+                            var els = document.querySelectorAll('div,span,button,a,[role="button"]');
+                            for (var i=0; i<els.length; i++) {
+                                var t = (els[i].textContent||'').trim();
+                                if (t==='全部消息' || t.indexOf('查看全部')>=0) {
+                                    var r = els[i].getBoundingClientRect();
+                                    if (r.width>40 && r.height>10) {
+                                        els[i].click();
+                                        return {x:r.x+r.width/2, y:r.y+r.height/2, text:t};
+                                    }
+                                }
+                            }
+                            return null;
+                        """)
+                        if found_pos:
+                            self._cmt_click_at(found_pos["x"], found_pos["y"])
+                            self.L(f"  JS点击 '{found_pos.get('text','')}' @ ({found_pos['x']:.0f},{found_pos['y']:.0f})", "white")
+                        else:
+                            self.L("  ❌ 未找到「全部消息」元素", "yellow")
+                            break
+
+                    time.sleep(3.0)
+
+                    # ═══ 验证：是否进入了消息页面 ═══
+                    verify_result = self._d.execute_script("""
+                        (function() {
+                            var url = window.location.href;
+                            if (url.indexOf('/message')>=0 || url.indexOf('/notice')>=0) return 'url';
+                            var bodyText = (document.body.innerText||'').substring(0, 1500);
+                            var tabKw = ['评论','赞','@我','@我的','粉丝','私信','全部消息','互动消息','系统消息','通知'];
+                            var tabHits = 0;
+                            for (var i=0;i<tabKw.length;i++) { if (bodyText.indexOf(tabKw[i])>=0) tabHits++; }
+                            if (tabHits >= 2) return 'tabs:'+tabHits;
+                            var containers = document.querySelectorAll(
+                                '[class*="message"],[class*="msg"],[class*="conversation"],[class*="chat"],' +
+                                '[class*="notice"],[class*="notify"],[class*="inbox"],[class*="dialog-list"],' +
+                                '[class*="tab"],[class*="filter"],[class*="nav"]');
+                            for (var i=0; i<containers.length; i++) {
+                                var r = containers[i].getBoundingClientRect();
+                                if (r.width>150 && r.height>100) return 'container';
+                            }
+                            if (bodyText.length > 500) return 'textlen';
+                            return '';
+                        })();
+                    """)
+
+                    if verify_result:
+                        self.L(f"  ✓ 已进入消息页面({verify_result})", "green")
+                        all_msg_clicked = True
+                        break
+
+                    self.L(f"  ⚠ 未检测到消息页面", "yellow")
 
             if not all_msg_clicked:
                 self.L("  ❌ 4次重试均未进入消息列表，跳过本轮", "yellow")
@@ -768,55 +791,75 @@ class AccountWorker(QThread):
             self.L("💬 找「评论」筛选...", "white")
             time.sleep(1.0)  # 等导航渲染
 
-            # 精确找左侧导航中的「评论」（排除通知面板中的「评论」）
+            # ── 优先使用校准坐标点击「评论」筛选 ──
             cmt_clicked = False
-            cmt_el = None
-            try:
-                # 优先找左侧导航区域中的「评论」
-                elements = self._d.find_elements(By.XPATH,
-                    "//div[contains(@class,'nav') or contains(@class,'sidebar') or contains(@class,'menu') or contains(@class,'tab')]//*[text()='评论']")
-                if not elements:
-                    # 宽松搜索
-                    elements = self._d.find_elements(By.XPATH, "//*[text()='评论']")
-                for el in elements:
-                    r = el.rect
-                    if r['width'] > 0 and r['height'] > 0 and r['width'] < 200:
-                        cmt_el = el
-                        break
-            except:
-                pass
-
-            if cmt_el:
-                try:
-                    self._d.execute_script("arguments[0].scrollIntoView({block:'center'});", cmt_el)
-                    time.sleep(0.3)
-                    cmt_el.click()
-                    self.L(f"  点击「评论」(WebElement)", "white")
+            cal_cmt = self._positions.get("3_评论筛选") if self._positions else None
+            if cal_cmt:
+                self.L(f"  校准坐标点击「评论」({cal_cmt['x']},{cal_cmt['y']})", "white")
+                self._cmt_click_at(cal_cmt["x"], cal_cmt["y"])
+                time.sleep(2.5)
+                cmt_loaded = self._cmt_js("""
+                    (function() {
+                        var allDivs = document.querySelectorAll('div[class*="item"],div[class*="comment"],div[class*="msg"],li[class*="item"],li[class*="comment"]');
+                        for (var i=0; i<allDivs.length; i++) {
+                            var t = (allDivs[i].textContent||'').trim();
+                            if (t.length > 15 && allDivs[i].getBoundingClientRect().width > 200) return 'ok';
+                        }
+                        return '';
+                    })();
+                """)
+                if cmt_loaded == 'ok':
+                    self.L("  ✓ 校准坐标已进入评论列表", "green")
                     cmt_clicked = True
+                else:
+                    self.L("  校准坐标点击未进入评论列表，改用DOM搜索", "yellow")
+
+            # 精确找左侧导航中的「评论」（排除通知面板中的「评论」）
+            if not cmt_clicked:
+                cmt_el = None
+                try:
+                    # 优先找左侧导航区域中的「评论」
+                    elements = self._d.find_elements(By.XPATH,
+                        "//div[contains(@class,'nav') or contains(@class,'sidebar') or contains(@class,'menu') or contains(@class,'tab')]//*[text()='评论']")
+                    if not elements:
+                        # 宽松搜索
+                        elements = self._d.find_elements(By.XPATH, "//*[text()='评论']")
+                    for el in elements:
+                        r = el.rect
+                        if r['width'] > 0 and r['height'] > 0 and r['width'] < 200:
+                            cmt_el = el
+                            break
                 except:
                     pass
 
-            if not cmt_clicked:
-                found = self._cmt_js("""
-                    var all = document.querySelectorAll('span, div, a, button, li');
-                    for (var i = 0; i < all.length; i++) {
-                        var t = (all[i].textContent || '').trim();
-                        if (t !== '评论') continue;
-                        var r = all[i].getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0 && r.width < 200) {
-                            all[i].click();
-                            return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                if cmt_el:
+                    try:
+                        self._d.execute_script("arguments[0].scrollIntoView({block:'center'});", cmt_el)
+                        time.sleep(0.3)
+                        cmt_el.click()
+                        self.L(f"  点击「评论」(WebElement)", "white")
+                        cmt_clicked = True
+                    except:
+                        pass
+
+                if not cmt_clicked:
+                    found = self._cmt_js("""
+                        var all = document.querySelectorAll('span, div, a, button, li');
+                        for (var i = 0; i < all.length; i++) {
+                            var t = (all[i].textContent || '').trim();
+                            if (t !== '评论') continue;
+                            var r = all[i].getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 && r.width < 200) {
+                                all[i].click();
+                                return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                            }
                         }
-                    }
-                    return null;
-                """)
-                if found:
-                    self.L(f"  JS找到「评论」@ ({found['x']}, {found['y']})", "white")
-                    self._cmt_click_at(found["x"], found["y"])
-                    cmt_clicked = True
-                else:
-                    # 无录制兜底了
-                    pass
+                        return null;
+                    """)
+                    if found:
+                        self.L(f"  JS找到「评论」@ ({found['x']}, {found['y']})", "white")
+                        self._cmt_click_at(found["x"], found["y"])
+                        cmt_clicked = True
 
             if not cmt_clicked:
                 self.L("⚠ 未找到「评论」标签", "yellow")
