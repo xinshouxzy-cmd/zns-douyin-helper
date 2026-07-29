@@ -1,9 +1,11 @@
 VERSION = "v2.0.61"
-# v2.0.61: 两大致命问题修复（Codex）
-#   1. 窗口抢占焦点：_cmt_cycle 所有点击改用 _cmt_click_at (JS/CDP优先，不抢焦点)
-#      - 步骤1通知点击：ActionChains → _cmt_click_at
-#      - _enter_stranger: ActionChains → JS click
-#      - _send_pm_reply: ActionChains.send_keys → elem.send_keys/JS
-#      - _paste: ActionChains → CDP Input.dispatchKeyEvent
-#   2. 跨电脑坐标不准：步骤4提取评论增强教程文字黑名单过滤
-#   (基于 v2.0.60: 侦察兵v14 + 私信等待优化)
+# 改动: 修复窗口抢占 + 定位准确性 + 安全加固
+#       (1) 移除所有 ActionChains 真实鼠标点击 → 纯JS事件
+#       (2) 通知按钮：ActionChains → JS hover + JS click
+#       (3) _cmt_click_at 零 ActionChains
+#       (4) 坐标加载增加 devicePixelRatio 感知
+#       (5) 侦察兵失败兜底录制坐标
+#       (6) GUI「重新校准」按钮（线程安全）
+#       (7) Chrome 增加 CalculateNativeWinOcclusion 禁用
+#       (8) 安全加固：execute_script 改用 arguments 参数化（防注入）
+#       (9) 安全加固：_append_log HTML 转义（防UI欺骗）

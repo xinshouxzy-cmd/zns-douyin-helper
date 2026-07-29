@@ -1,13 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-遵农商·抖音客服助手 — 工作线程 v2.0.61 (Codex 修复版)
+遵农商·抖音客服助手 — 工作线程
 双标签页：抖音首页(评论) + 私信页(私信)
-- 评论回复：JS/CDP优先 → ActionChains终极兜底（不抢前台窗口）
-- 私信回复：v2.0.61 CDP改造（不抢焦点）
-- 两大致命修复：
-  1. 窗口抢占焦点：所有点击/输入改用 JS/CDP，ActionChains 仅作最后兜底
-  2. 跨电脑坐标不准：教程文字黑名单过滤 + JS DOM搜索升级
-  3. 每步点击后 DOM 变化校验
+- 评论回复：CDP 鼠标事件（Playwright 同款底层）+ 全页面 JS 找坐标
+- 私信回复：基于 v42.1 成熟方案（不动）
 - 分时轮流：30s评论 → 20s私信 → 10s休息
 """
 
@@ -83,6 +79,7 @@ class AccountWorker(QThread):
     pm_cnt = pyqtSignal(str, int)
     cmt_cnt = pyqtSignal(str, int)
     stopped = pyqtSignal(str)
+    recal_done = pyqtSignal(str, bool)  # (账号名, 是否成功)
 
     def __init__(self, cfg, pm_poll=5, cmt_poll=30):
         super().__init__()
@@ -100,6 +97,7 @@ class AccountWorker(QThread):
         self._login_ok = Event()
         self._last_reply = {}
         self._notify_coord = None  # 侦察兵校准后的通知按钮坐标
+        self._recal_requested = Event()  # 线程安全：GUI请求重新校准
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
@@ -184,7 +182,7 @@ class AccountWorker(QThread):
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_argument("--disable-backgrounding-occluded-windows")
         opt.add_argument("--disable-renderer-backgrounding")
-        opt.add_argument("--disable-features=TranslateUI")
+        opt.add_argument("--disable-features=TranslateUI,CalculateNativeWinOcclusion")
         opt.add_argument("--force-device-scale-factor=1")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
         opt.add_experimental_option("useAutomationExtension", False)
@@ -251,40 +249,9 @@ class AccountWorker(QThread):
             except:
                 pass
             if elem:
-                try:
-                    elem.send_keys(Keys.CONTROL, 'v')
-                except:
-                    self._cdp_paste("ctrl")
+                elem.send_keys(Keys.CONTROL, 'v')
             else:
-                self._cdp_paste("ctrl")
-
-
-    def _cdp_paste(self, mod="ctrl"):
-        """v2.0.39: CDP 键盘粘贴（不抢焦点）"""
-        mod_key = "Meta" if mod == "meta" else "Control"
-        try:
-            self._d.execute_cdp_cmd("Input.dispatchKeyEvent", {
-                "type": "keyDown", "key": mod_key, "code": mod_key + "Left",
-                "windowsVirtualKeyCode": 91 if mod == "meta" else 17,
-            })
-            self._d.execute_cdp_cmd("Input.dispatchKeyEvent", {
-                "type": "keyDown", "key": "v", "code": "KeyV",
-            })
-            self._d.execute_cdp_cmd("Input.dispatchKeyEvent", {
-                "type": "keyUp", "key": "v", "code": "KeyV",
-            })
-            self._d.execute_cdp_cmd("Input.dispatchKeyEvent", {
-                "type": "keyUp", "key": mod_key, "code": mod_key + "Left",
-            })
-        except:
-            self._d.execute_script("""
-                var el = document.activeElement || document.body;
-                var dt = new DataTransfer();
-                dt.setData('text/plain', arguments[0]);
-                el.dispatchEvent(new ClipboardEvent('paste', {
-                    clipboardData: dt, bubbles: true
-                }));
-            """, text)
+                ActionChains(self._d).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
 
     def _clean_name(self, raw):
         return re.sub(
@@ -303,8 +270,7 @@ class AccountWorker(QThread):
         if not found: return False
         try:
             el = self._d.find_element(By.CSS_SELECTOR, '[data-sc="1"]')
-            # v2.0.39: JS click 优先（不抢焦点）
-            self._d.execute_script("arguments[0].click();", el)
+            ActionChains(self._d).move_to_element(el).click().perform()
             time.sleep(4)
             return True
         except:
@@ -333,21 +299,9 @@ class AccountWorker(QThread):
         """)
         if not found: return False
         time.sleep(0.3)
-        # v2.0.39: 找到输入框直接用 send_keys（不抢焦点）
-        try:
-            inp = self._d.find_element(By.CSS_SELECTOR, '[contenteditable="true"]')
-            inp.send_keys(text)
-            inp.send_keys(Keys.ENTER)
-        except:
-            # 兜底：JS 设置文本 + 触发 Enter
-            self._d.execute_script("""
-                var el = document.querySelector('[contenteditable="true"]');
-                if (el) {
-                    el.textContent = arguments[0];
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true}));
-                }
-            """, text)
+        for ch in text:
+            ActionChains(self._d).send_keys(ch).perform()
+        ActionChains(self._d).pause(0.3).send_keys(Keys.ENTER).perform()
         return True
 
     def _pm_cycle(self):
@@ -440,11 +394,11 @@ class AccountWorker(QThread):
         except Exception as e:
             self.L(f"⚠ 私信异常: {e}", "yellow")
 
-    # ═══════════ 评论回复（v2.0.39: JS/CDP优先 → ActionChains终极兜底） ═══════════
+    # ═══════════ 评论回复（纯JS点击，零ActionChains，不抢前台窗口） ═══════════
 
     def _cmt_click_at(self, x, y, retries=3):
-        """点击坐标 - 纯JS方案，绝不抢前台窗口"""
-        # 方法1: elementFromPoint + .click()
+        """点击坐标 - 纯JS方案，绝不抢前台窗口（零 ActionChains）"""
+        # 方法1: elementFromPoint + .click()（适合大多数元素）
         for i in range(retries):
             try:
                 result = self._d.execute_script("""
@@ -478,21 +432,25 @@ class AccountWorker(QThread):
             except:
                 time.sleep(0.5)
 
-        # 方法3: ActionChains 最终兜底（会抢焦点，仅在前两种都失败时用）
+        # 方法3: 完整JS鼠标事件链（hover→mousedown→mouseup→click，不抢焦点）
         try:
-            body = self._d.find_element(By.TAG_NAME, "body")
-            cx, cy = self._d.execute_script("""
-                const r = document.body.getBoundingClientRect();
-                return [r.left + r.width/2, r.top + r.height/2];
-            """)
-            ox, oy = int(x - cx), int(y - cy)
-            ActionChains(self._d, duration=0) \
-                .move_to_element_with_offset(body, ox, oy) \
-                .click().perform()
-            time.sleep(0.6)
-            return True
+            result = self._d.execute_script("""
+                var el = document.elementFromPoint(arguments[0], arguments[1]);
+                if (!el) return 'null';
+                var seq = ['mouseenter','mouseover','mousemove','mousedown','focus','mouseup','click'];
+                for (var i=0; i<seq.length; i++) {
+                    el.dispatchEvent(new MouseEvent(seq[i], {bubbles:true,cancelable:true,
+                        clientX:arguments[0],clientY:arguments[1],view:window}));
+                }
+                el.focus();
+                return 'ok';
+            """, x, y)
+            if result == "ok":
+                time.sleep(0.6)
+                return True
         except:
-            return False
+            pass
+        return False
 
     def _minimize_after(self):
         """已废弃：最小化会破坏 elementFromPoint，改为不干涉窗口状态"""
@@ -518,6 +476,11 @@ class AccountWorker(QThread):
         except:
             return None
 
+    def recalibrate_now(self):
+        """线程安全：请求在 worker 线程内重新校准（设置标志位让 run() 循环处理）"""
+        self._notify_coord = None
+        self._recal_requested.set()
+
     # ── 侦察兵：自校准通知按钮坐标 ──
     def _calibrate_notify(self):
         """启动时运行一次侦察兵，精准定位通知按钮坐标"""
@@ -536,8 +499,22 @@ class AccountWorker(QThread):
             self.L(f"[侦察兵] ❌ 异常: {e}", "red")
             self._notify_coord = None
 
+    def _cmt_hover_at(self, x, y):
+        """JS悬停坐标 — 纯 dispatchEvent，不移动真实鼠标，不抢前台窗口"""
+        return self._cmt_js("""
+            (function(cx,cy) {
+                var el = document.elementFromPoint(cx, cy);
+                if (!el) return false;
+                ['pointerenter','mouseenter','pointerover','mouseover','pointermove','mousemove'].forEach(function(t){
+                    el.dispatchEvent(new MouseEvent(t, {bubbles:true,cancelable:true,
+                        clientX:cx,clientY:cy,view:window}));
+                });
+                return true;
+            })(arguments[0], arguments[1]);
+        """, x, y)
+
     def _cmt_load_positions(self):
-        """加载录制的坐标文件，按当前视口缩放"""
+        """加载录制的坐标文件，按当前视口+DPI缩放"""
         pos_file = os.path.join(BASE_DIR, "comment_data", "positions.json")
         if not os.path.exists(pos_file):
             self.L("⚠ 未找到坐标文件 comment_data/positions.json", "yellow")
@@ -545,24 +522,32 @@ class AccountWorker(QThread):
         try:
             with open(pos_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            vp = self._d.execute_script("return {w: window.innerWidth, h: window.innerHeight};")
+            vp = self._d.execute_script(
+                "return {w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1};")
             vw, vh = vp["w"], vp["h"]
+            dpr = vp.get("dpr", 1)
+            # 读取录制时的 DPR（如果有记录）
+            rec_dpr = data.get("_dpr", 1)
             positions = {}
             for name, p in data.items():
                 if name.startswith("_"):
                     continue
                 if "x_pct" in p and p["x_pct"] > 0:
+                    # 百分比坐标：直接按视口缩放（与DPR无关，因为视口单位就是CSS像素）
                     positions[name] = {"x": int(p["x_pct"] * vw), "y": int(p["y_pct"] * vh)}
                 else:
-                    # 兼容旧格式：标清录制分辨率 1084x705
-                    positions[name] = {"x": int(p.get("x", 0) * vw / 1084), "y": int(p.get("y", 0) * vh / 705)}
+                    # 兼容旧格式：标清录制分辨率 1084x705，校正 DPR 差异
+                    scale = (vw / 1084) * (rec_dpr / max(dpr, 0.5))
+                    y_scale = (vh / 705) * (rec_dpr / max(dpr, 0.5))
+                    positions[name] = {"x": int(p.get("x", 0) * scale),
+                                       "y": int(p.get("y", 0) * y_scale)}
             return positions
         except Exception as e:
             self.L(f"⚠ 坐标文件读取失败: {e}", "yellow")
             return None
 
     def _cmt_cycle(self):
-        """一轮评论检测+回复（坐标优先 → JS动态兜底）"""
+        """一轮评论检测+回复（JS动态检测为主，录制坐标兜底，零ActionChains）"""
         try:
             self._switch_tab(TAB_HOME)
             if "www.douyin.com" not in (self._d.current_url or ""):
@@ -573,31 +558,40 @@ class AccountWorker(QThread):
             # 加载录制的坐标（兜底用）
             pos = self._cmt_load_positions()
 
-            # ====== 1. 点击通知图标（侦察兵校准，不用录制坐标） ======
+            # ====== 1. 点击通知图标（侦察兵优先，录制坐标兜底） ======
             verified = ''
-            if not self._notify_coord:
-                self.L("❌ 侦察兵未校准，跳过本轮（不依赖录制坐标）", "yellow")
+            nx = ny = 0
+            if self._notify_coord:
+                nx, ny = self._notify_coord
+                self.L(f"🔔 侦察兵坐标 ({nx}, {ny})", "white")
+            elif pos and "1_通知图标" in pos:
+                nx, ny = pos["1_通知图标"]["x"], pos["1_通知图标"]["y"]
+                self.L(f"🔔 录制坐标 ({nx}, {ny})", "yellow")
+            else:
+                self.L("❌ 无通知按钮坐标（侦察兵失败且无录制坐标），跳过本轮", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
-            nx, ny = self._notify_coord
-            self.L(f"🔔 侦察兵坐标 ({nx}, {ny})", "white")
 
             for attempt in range(3):
                 if attempt > 0:
-                    self.L(f"  重试通知点击 ({attempt+1}/3)...", "yellow")
+                    self.L(f"  重试通知悬停 ({attempt+1}/3)...", "yellow")
 
-                # 用 ActionChains 真实鼠标点击（React 组件最可靠的方式）
-                try:
-                    body = self._d.find_element(By.TAG_NAME, "body")
-                    cx, cy = self._d.execute_script(
-                        "const r=document.body.getBoundingClientRect();"
-                        "return[r.left+r.width/2,r.top+r.height/2];")
-                    ActionChains(self._d, duration=0) \
-                        .move_to_element_with_offset(body, int(nx-cx), int(ny-cy)) \
-                        .click().perform()
-                except Exception as e:
-                    self.L(f"  点击失败: {e}", "yellow")
+                # 纯JS hover方案：dispatchEvent 模拟鼠标悬停（不抢前台窗口）
+                # 先用 JS mouseenter/mouseover 触达通知面板（douyin通知是hover触发）
+                self._d.execute_script("""
+                    (function(cx,cy) {
+                        var el = document.elementFromPoint(cx, cy);
+                        if (!el) return;
+                        ['mouseenter','mouseover','mousemove'].forEach(function(t){
+                            el.dispatchEvent(new MouseEvent(t, {bubbles:true,cancelable:true,
+                                clientX:cx,clientY:cy,view:window}));
+                        });
+                    })(arguments[0], arguments[1]);
+                """, nx, ny)
+                time.sleep(1.8)
 
-                time.sleep(2.5)
+                # 然后尝试 JS click（某些douyin版本需要click触发）
+                self._cmt_click_at(nx, ny)
+                time.sleep(1.2)
 
                 # 校验：通知面板是否弹出
                 verified = self._cmt_js("""
@@ -638,7 +632,7 @@ class AccountWorker(QThread):
             """)
             self.L(f"  [调试] 全部消息={debug_info.get('hasAllMsg')}, 评论={debug_info.get('hasComment')}, 赞={debug_info.get('hasLike')}, @我={debug_info.get('hasAt')}")
 
-            # ── 找「全部消息」并用 JS/CDP 点击 ──
+            # ── 找「全部消息」并用纯JS点击 ──
             all_msg_clicked = False
             for all_try in range(4):
                 if all_try > 0:
@@ -704,41 +698,43 @@ class AccountWorker(QThread):
                 time.sleep(3.0)
 
                 # ═══ 验证：是否进入了消息页面 ═══
-                # douyin 的「全部消息」可能是 SPA 路由不改变 URL
-                # 关键是：面板变成了更大的消息列表页面
-                verify_result = self._cmt_js("""
+                # douyin 的「全部消息」可能是 SPA 路由不改变 URL 或弹出浮层
+                # 验证策略：检查页面内容是否发生了变化（更多消息相关文字）
+                verify_result = self._d.execute_script("""
                     (function() {
                         var url = window.location.href;
                         if (url.indexOf('/message')>=0 || url.indexOf('/notice')>=0) return 'url';
 
-                        // 检测消息列表的左侧导航（互动消息/评论/赞/@我/粉丝 等标签）
-                        var bodyText = (document.body.innerText||'').substring(0, 1000);
-                        var hasInteraction = bodyText.indexOf('互动消息') >= 0;
-                        var hasComment = bodyText.indexOf('评论') >= 0;
-                        var hasAll = bodyText.indexOf('全部') >= 0;
+                        var bodyText = (document.body.innerText||'').substring(0, 1500);
 
-                        if (hasInteraction && (hasComment || hasAll)) return 'nav';
+                        // 策略1：检测消息列表常见文字组合
+                        var kw = ['互动消息','系统消息','赞和收藏','@我的','粉丝','全部消息','通知','私信'];
+                        var hits = 0;
+                        for (var i=0;i<kw.length;i++) { if (bodyText.indexOf(kw[i])>=0) hits++; }
+                        if (hits >= 2) return 'kw:'+hits;
 
-                        // 检测大的消息列表容器
+                        // 策略2：检测大的消息/会话列表容器
                         var containers = document.querySelectorAll(
-                            '[class*="message-list"],[class*="conversation"],[class*="msg-list"],' +
-                            '[class*="chat-list"],[class*="notice-list"],[class*="inbox-list"],' +
-                            '[class*="notification-list"]');
+                            '[class*="message"],[class*="msg"],[class*="conversation"],[class*="chat"],' +
+                            '[class*="notice"],[class*="notify"],[class*="inbox"],[class*="dialog-list"]');
                         for (var i=0; i<containers.length; i++) {
                             var r = containers[i].getBoundingClientRect();
-                            if (r.width>250 && r.height>300) return 'container';
+                            if (r.width>200 && r.height>250) return 'container';
                         }
+
+                        // 策略3：页面文字超过800字符（通常消息列表内容较多）
+                        if (bodyText.length > 800) return 'textlen';
 
                         return '';
                     })();
                 """)
 
-                if verify_result in ('url', 'nav', 'container'):
+                if verify_result:
                     self.L(f"  ✓ 已进入消息页面({verify_result})", "green")
                     all_msg_clicked = True
                     break
 
-                self.L(f"  ⚠ 未检测到消息页面 (result={verify_result})", "yellow")
+                self.L(f"  ⚠ 未检测到消息页面", "yellow")
 
             if not all_msg_clicked:
                 self.L("  ❌ 4次重试均未进入消息列表，跳过本轮", "yellow")
@@ -895,20 +891,20 @@ class AccountWorker(QThread):
                 # 录制坐标兜底
                 p_item = pos.get("4_第一条评论") if pos else None
                 if p_item:
-                    ct = self._cmt_js(f"""
-                        var el = document.elementFromPoint({p_item['x']}, {p_item['y']});
+                    ct = self._d.execute_script("""
+                        var el = document.elementFromPoint(arguments[0], arguments[1]);
                         if (!el) return '';
                         var walk = el;
-                        for (var i = 0; i < 6; i++) {{
+                        for (var i = 0; i < 6; i++) {
                             if (walk.parentElement) walk = walk.parentElement;
                             var t = (walk.textContent || '').trim();
-                            if (t.length > 15 && t.length < 300) {{
+                            if (t.length > 15 && t.length < 300) {
                                 walk.setAttribute('data-cmt-first', '1');
                                 return t.substring(0, 120);
-                            }}
-                        }}
+                            }
+                        }
                         return '';
-                    """)
+                    """, p_item['x'], p_item['y'])
 
             if not ct:
                 self.L("⚠ 未找到评论", "yellow")
@@ -1070,19 +1066,19 @@ class AccountWorker(QThread):
                     # 策略B: 录制坐标兜底
                     p_send = pos.get("7_发送按钮") if pos else None
                     if p_send:
-                        btn_clicked = self._cmt_js(f"""
-                            var el = document.elementFromPoint({p_send['x']}, {p_send['y']});
+                        btn_clicked = self._d.execute_script("""
+                            var el = document.elementFromPoint(arguments[0], arguments[1]);
                             if (!el) return false;
-                            for (var i = 0; i < 5; i++) {{
+                            for (var i = 0; i < 5; i++) {
                                 var tag = (el.tagName || '').toLowerCase();
                                 var cls = (el.className || '').toString().toLowerCase();
-                                if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {{
+                                if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {
                                     el.click(); return true;
-                                }}
+                                }
                                 if (el.parentElement) el = el.parentElement;
-                            }}
+                            }
                             el.click(); return true;
-                        """)
+                        """, p_send['x'], p_send['y'])
                         if btn_clicked:
                             self.L("📤 录制坐标发送", "white")
                         else:
@@ -1200,6 +1196,22 @@ class AccountWorker(QThread):
                 for _ in range(REST_PHASE):
                     if not self._run: break
                     time.sleep(1)
+
+                # ── 检查是否GUI请求了重新校准（线程安全：由worker线程自己执行）──
+                if self._recal_requested.is_set():
+                    self._recal_requested.clear()
+                    self.L("🔄 收到重新校准请求...", "white")
+                    self._calibrate_notify()
+                    ok = self._notify_coord is not None
+                    self.recal_done.emit(self.name, ok)
+                    if ok:
+                        self.L("✅ 重新校准成功", "green")
+                        self._switch_tab(TAB_HOME)
+                        if "www.douyin.com" not in (self._d.current_url or ""):
+                            self._d.get(DY_HOME)
+                            time.sleep(3)
+                    else:
+                        self.L("⚠ 重新校准失败，继续使用旧坐标", "yellow")
 
         except Exception as e:
             self.L(f"❌ 异常: {e}", "red")

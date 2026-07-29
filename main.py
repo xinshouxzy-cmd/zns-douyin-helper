@@ -5,7 +5,7 @@
 基于 PyQt5 + Selenium
 """
 
-import os, sys, json, csv, traceback
+import os, sys, json, csv, traceback, html as _html
 from datetime import datetime
 from threading import Event
 
@@ -409,8 +409,15 @@ class AccountPage(QWidget):
         self.btn_export.setStyleSheet(_btn_default())
         self.btn_export.setFixedHeight(42)
         self.btn_export.clicked.connect(self._export_one)
+        self.btn_recal = QPushButton("🔄 重新校准")
+        self.btn_recal.setStyleSheet(_btn_default())
+        self.btn_recal.setFixedHeight(42)
+        self.btn_recal.clicked.connect(self._recalibrate)
+        self.btn_recal.setToolTip("在新电脑上重新定位通知按钮位置")
+        self.btn_recal.setVisible(False)  # 运行时才显示
         btn_row.addStretch()
         btn_row.addWidget(self.btn_start)
+        btn_row.addWidget(self.btn_recal)
         btn_row.addWidget(self.btn_export)
         lay.addLayout(btn_row)
 
@@ -446,11 +453,39 @@ class AccountPage(QWidget):
             self.btn_login.setVisible(False)
             self._set_status_ui("登录确认中...", C_ACCENT, True, "登录确认中...")
 
+    def _recalibrate(self):
+        """手动触发通知按钮定位重新校准（线程安全：通过信号投递到worker线程）"""
+        if self.worker and self.worker.isRunning():
+            self.btn_recal.setEnabled(False)
+            self.btn_recal.setText("⏳ 校准中...")
+            self.main._append_log(self.cfg.get("name", "?"), "[white]🔄 手动触发重新校准（将在下一轮休息时执行）...")
+            self.worker.recal_done.connect(self._on_recal_done)
+            self.worker.recalibrate_now()
+        else:
+            QMessageBox.information(self, "提示", "请先启动账号，校准需要在运行状态下进行。")
+
+    def _on_recal_done(self, name, ok):
+        """校准完成回调（来自 worker 线程的信号）"""
+        if name == self.cfg.get("name"):
+            self.btn_recal.setEnabled(True)
+            self.btn_recal.setText("🔄 重新校准")
+            try:
+                self.worker.recal_done.disconnect(self._on_recal_done)
+            except:
+                pass
+            if ok:
+                self.main._append_log(name, "[green]✅ 校准成功")
+                QMessageBox.information(self, "校准完成", "通知按钮位置已重新定位成功！")
+            else:
+                self.main._append_log(name, "[yellow]⚠ 校准失败，将使用录制坐标兜底")
+                QMessageBox.warning(self, "校准失败", "自动校准未找到通知按钮。\n请确保浏览器在抖音首页，然后重试。\n\n系统将使用 comment_data/positions.json 中的录制坐标作为兜底。")
+
     def _toggle(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.btn_start.setText("⏳ 停止中...")
             self.btn_start.setEnabled(False)
+            self.btn_recal.setVisible(False)
         else:
             self._save()
             self.worker = AccountWorker(self.cfg, PM_POLL, CMT_POLL)
@@ -463,6 +498,7 @@ class AccountPage(QWidget):
             self.worker.start()
             self.btn_start.setText("⏹ 停止")
             self.btn_start.setStyleSheet(_btn_danger())
+            self.btn_recal.setVisible(True)
             self._set_status_ui("启动中...", C_ACCENT, True, "启动中...")
 
     def _on_waiting_login(self, name):
@@ -895,7 +931,7 @@ class MainWindow(QMainWindow):
             color = C_TEXT; text = msg[7:]
         else:
             color = C_TEXT; text = msg
-        html = f'<span style="color:#888;">{ts}</span> <b style="color:{C_GREEN};">[{name}]</b> <span style="color:{color};">{text}</span>'
+        html = f'<span style="color:#888;">{ts}</span> <b style="color:{C_GREEN};">[{_html.escape(name)}]</b> <span style="color:{color};">{_html.escape(text)}</span>'
         self.log_box.append(html)
         self.log_box.moveCursor(QTextCursor.End)
         if self.log_box.document().blockCount() > 500:
