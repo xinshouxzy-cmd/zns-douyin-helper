@@ -1,6 +1,7 @@
-VERSION = "v2.2.1"
-# v2.2.1: 修复校准中5连点拦截导致页面无法导航的问题 (Codex)
-#   - worker.py: do_calibration_step 确认后自动补一发真实点击触发页面导航
-#   - 校准坐标优先用于第2步全部消息和第3步评论点击
-#   - CalibrationWizard 保存后自动关闭对话框不再卡住
-#   (基于 v2.2.0)
+VERSION = "v2.2.2"
+# v2.2.2: 校准流程移到 worker 后台线程，GUI不再阻塞 + 点击无反馈提示 (Codex)
+#   - worker.py: 新增 run_calibration_flow / cancel_calibration，通过 _start_calib 信号跨线程触发
+#   - main.py: CalibrationWizard 改为异步信号驱动，不再同步阻塞 GUI
+#   - 超时从120s缩减到60s，取消按钮可实时响应
+#   - 校准对话框提示"点击时浏览器无视觉反馈是正常的"
+#   (基于 v2.2.1)

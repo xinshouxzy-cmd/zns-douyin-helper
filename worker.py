@@ -81,6 +81,8 @@ class AccountWorker(QThread):
     stopped = pyqtSignal(str)
     calib_step = pyqtSignal(str, int, str)  # (账号名, 步骤号1-3, 描述) — 校准模式对外广播
     calib_captured = pyqtSignal(str, int, int, int)  # (账号名, 步骤号, x, y) — 捕获到坐标
+    calib_all_done = pyqtSignal(str, object)  # (账号名, {step_id: {x,y}} 或 None) — 校准流程完成
+    _start_calib = pyqtSignal()  # GUI→worker 触发校准流程（跨线程）
 
     def __init__(self, cfg, pm_poll=5, cmt_poll=30):
         super().__init__()
@@ -100,6 +102,7 @@ class AccountWorker(QThread):
         self._positions = None  # 校准后的坐标 dict
         self._calibration_mode = False  # 是否处于手动校准模式
         self._calib_event = Event()     # 校准模式下的步骤等待事件
+        self._start_calib.connect(self.run_calibration_flow)  # GUI触发→worker线程执行
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
@@ -1276,7 +1279,7 @@ class AccountWorker(QThread):
             setTimeout(function() {
                 document.removeEventListener('click', clickHandler, true);
                 done(null);
-            }, 120000);
+            }, 60000);
         """)
 
         if result:
@@ -1285,8 +1288,46 @@ class AccountWorker(QThread):
             self.calib_captured.emit(self.name, step_index, x, y)
             return {"x": x, "y": y, "step_id": step_id}
         else:
-            self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(120s)，未检测到5连点", "yellow")
+            self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(60s)，未检测到5连点", "yellow")
             return None
+
+    def run_calibration_flow(self):
+        """在 worker 线程中运行完整校准流程（3步），通过信号通知 GUI，不阻塞主线程。"""
+        captured = {}
+        try:
+            # 进入校准模式：确保在抖音首页
+            self._calibration_mode = True
+            self._calib_as_shared = True
+            self.L("📐 进入手动校准模式...", "white")
+            self._switch_tab(TAB_HOME)
+            if "www.douyin.com" not in (self._d.current_url or ""):
+                self._d.get(DY_HOME)
+                time.sleep(4)
+
+            for step in range(1, 4):
+                if not self._calibration_mode:
+                    self.L("📐 校准已取消", "yellow")
+                    break
+
+                result = self.do_calibration_step(step)
+                if result:
+                    captured[result["step_id"]] = {"x": result["x"], "y": result["y"]}
+                else:
+                    self.L(f"📐 第{step}步未捕获，继续下一步", "yellow")
+
+            # 保存并退出
+            ok = self.exit_calibration_mode(captured)
+            self.calib_all_done.emit(self.name, captured if ok else None)
+
+        except Exception as e:
+            self.L(f"📐 校准流程异常: {e}", "yellow")
+            self._calibration_mode = False
+            self.calib_all_done.emit(self.name, None)
+
+    def cancel_calibration(self):
+        """取消校准（由GUI调用），在 worker 线程检查标志位生效"""
+        self._calibration_mode = False
+        self.L("📐 收到取消请求...", "yellow")
 
     def exit_calibration_mode(self, captured_steps):
         """退出校准模式并保存数据
