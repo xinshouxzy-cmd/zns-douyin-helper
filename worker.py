@@ -7,7 +7,7 @@
 - 分时轮流：30s评论 → 20s私信 → 10s休息
 """
 
-import os, sys, json, time, re, subprocess, traceback
+import os, sys, json, time, re, subprocess, traceback, threading
 from datetime import datetime
 from threading import Event
 
@@ -102,7 +102,7 @@ class AccountWorker(QThread):
         self._positions = None  # 校准后的坐标 dict
         self._calibration_mode = False  # 是否处于手动校准模式
         self._calib_event = Event()     # 校准模式下的步骤等待事件
-        self._start_calib.connect(self.run_calibration_flow)  # GUI触发→worker线程执行
+        self._start_calib.connect(self._start_calib_thread)  # GUI触发→启动Python线程执行校准
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
@@ -1291,8 +1291,13 @@ class AccountWorker(QThread):
             self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(60s)，未检测到5连点", "yellow")
             return None
 
+    def _start_calib_thread(self):
+        """在 Python 原生线程中启动校准流程，彻底避免 Qt 线程亲和性导致的 GUI 阻塞。"""
+        t = threading.Thread(target=self.run_calibration_flow, daemon=True)
+        t.start()
+
     def run_calibration_flow(self):
-        """在 worker 线程中运行完整校准流程（3步），通过信号通知 GUI，不阻塞主线程。"""
+        """在独立线程中运行完整校准流程（3步），通过信号通知 GUI，不阻塞主线程。"""
         captured = {}
         try:
             # 进入校准模式：确保在抖音首页
