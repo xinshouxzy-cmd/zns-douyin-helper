@@ -722,23 +722,25 @@ class AccountWorker(QThread):
 
                         var bodyText = (document.body.innerText||'').substring(0, 1500);
 
-                        // 策略1：检测消息列表常见文字组合
-                        var kw = ['互动消息','系统消息','赞和收藏','@我的','粉丝','全部消息','通知','私信'];
-                        var hits = 0;
-                        for (var i=0;i<kw.length;i++) { if (bodyText.indexOf(kw[i])>=0) hits++; }
-                        if (hits >= 2) return 'kw:'+hits;
+                        // 策略1：检测消息/通知面板内是否展开了筛选标签
+                        // 关键是"评论"文字出现 + 面板内存在多个筛选选项
+                        var tabKw = ['评论','赞','@我','@我的','粉丝','私信','全部消息','互动消息','系统消息','通知'];
+                        var tabHits = 0;
+                        for (var i=0;i<tabKw.length;i++) { if (bodyText.indexOf(tabKw[i])>=0) tabHits++; }
+                        if (tabHits >= 2) return 'tabs:'+tabHits;
 
                         // 策略2：检测大的消息/会话列表容器
                         var containers = document.querySelectorAll(
                             '[class*="message"],[class*="msg"],[class*="conversation"],[class*="chat"],' +
-                            '[class*="notice"],[class*="notify"],[class*="inbox"],[class*="dialog-list"]');
+                            '[class*="notice"],[class*="notify"],[class*="inbox"],[class*="dialog-list"],' +
+                            '[class*="tab"],[class*="filter"],[class*="nav"]');
                         for (var i=0; i<containers.length; i++) {
                             var r = containers[i].getBoundingClientRect();
-                            if (r.width>200 && r.height>250) return 'container';
+                            if (r.width>150 && r.height>100) return 'container';
                         }
 
-                        // 策略3：页面文字超过800字符（通常消息列表内容较多）
-                        if (bodyText.length > 800) return 'textlen';
+                        // 策略3：页面文字超过500字符（下拉面板也有一定量文本）
+                        if (bodyText.length > 500) return 'textlen';
 
                         return '';
                     })();
