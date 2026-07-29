@@ -21,7 +21,7 @@ from selenium.common.exceptions import WebDriverException
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from notification_scout import NotificationScout
+from calibration_data import get_positions_for_account, get_calibration_status, CALIBRATION_STEPS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPLIED_DIR = os.path.join(BASE_DIR, "replied_records")
@@ -80,6 +80,8 @@ class AccountWorker(QThread):
     cmt_cnt = pyqtSignal(str, int)
     stopped = pyqtSignal(str)
     recal_done = pyqtSignal(str, bool)  # (账号名, 是否成功)
+    calib_step = pyqtSignal(str, int, str)  # (账号名, 步骤号1-7, 描述) — 校准模式对外广播
+    calib_captured = pyqtSignal(str, int, int, int)  # (账号名, 步骤号, x, y) — 捕获到坐标
 
     def __init__(self, cfg, pm_poll=5, cmt_poll=30):
         super().__init__()
@@ -96,8 +98,10 @@ class AccountWorker(QThread):
         self._cmt_n = 0
         self._login_ok = Event()
         self._last_reply = {}
-        self._notify_coord = None  # 侦察兵校准后的通知按钮坐标
-        self._recal_requested = Event()  # 线程安全：GUI请求重新校准
+        self._positions = None  # 校准后的坐标 dict（替换 _notify_coord）
+        self._recal_requested = Event()
+        self._calibration_mode = False  # 是否处于手动校准模式
+        self._calib_event = Event()     # 校准模式下的步骤等待事件
 
     def L(self, msg, tag="white"):
         self.log.emit(self.name, f"[{tag}]{msg}")
@@ -189,6 +193,16 @@ class AccountWorker(QThread):
         opt.add_experimental_option("detach", True)
         if sys.platform == "darwin":
             opt.add_argument("--use-mock-keychain")
+
+        # ═══ 窗口焦点控制：不抢前台，后台静默运行 ═══
+        opt.add_argument("--disable-features=window-activation")  # 不激活窗口
+        opt.add_argument("--disable-notifications")               # 屏蔽通知弹窗
+        opt.add_argument("--no-first-run")
+        opt.add_argument("--no-default-browser-check")
+        opt.add_argument("--disable-session-crashed-bubble")       # 不弹崩溃提示
+        opt.add_argument("--disable-infobars")                     # 不弹信息栏
+        opt.add_argument("--disable-popup-blocking")              # 不弹拦截提示
+        opt.add_argument("--disable-prompt-on-repost")
         self.L("启动浏览器窗口...", "white")
         try:
             d = webdriver.Chrome(service=Service(driver_path), options=opt)
@@ -477,27 +491,24 @@ class AccountWorker(QThread):
             return None
 
     def recalibrate_now(self):
-        """线程安全：请求在 worker 线程内重新校准（设置标志位让 run() 循环处理）"""
-        self._notify_coord = None
+        """重新加载校准数据"""
+        self._positions = None
         self._recal_requested.set()
 
-    # ── 侦察兵：自校准通知按钮坐标 ──
-    def _calibrate_notify(self):
-        """启动时运行一次侦察兵，精准定位通知按钮坐标"""
-        if self._notify_coord is not None:
-            return  # 已校准过，跳过
+    # ── 校准数据加载 ──
+    def _load_calibration(self):
+        """从校准数据库加载坐标，优先账号专属 > 机器共享 > 录制兜底"""
+        if self._positions is not None:
+            return True
 
-        self.L("[侦察兵] 开始自校准定位通知按钮...", "white")
-        try:
-            scout = NotificationScout(self._d, log_func=lambda m: self.L(m, "white"))
-            self._notify_coord = scout.locate()
-            if self._notify_coord:
-                self.L(f"[侦察兵] ✅ 通知按钮已定位: ({self._notify_coord[0]}, {self._notify_coord[1]})", "green")
-            else:
-                self.L("[侦察兵] ⚠ 自校准失败，需要在抖音首页重新运行", "yellow")
-        except Exception as e:
-            self.L(f"[侦察兵] ❌ 异常: {e}", "red")
-            self._notify_coord = None
+        self._positions = get_positions_for_account(self.name)
+        if self._positions:
+            src = self._positions.get("_source", "?")
+            self.L(f"📐 已加载校准坐标 (来源:{src})", "green")
+            return True
+        else:
+            self.L("⚠ 无可用校准坐标，请先进行手动校准", "yellow")
+            return False
 
     def _cmt_hover_at(self, x, y):
         """JS悬停坐标 — 纯 dispatchEvent，不移动真实鼠标，不抢前台窗口"""
@@ -547,7 +558,12 @@ class AccountWorker(QThread):
             return None
 
     def _cmt_cycle(self):
-        """一轮评论检测+回复（JS动态检测为主，录制坐标兜底，零ActionChains）"""
+        """一轮评论检测+回复（校准坐标为主，JS动态检测兜底，零ActionChains）"""
+        # 校准模式下跳过自动评论
+        if self._calibration_mode:
+            self.L("📐 校准模式中，跳过本轮评论", "white")
+            time.sleep(3)
+            return
         try:
             self._switch_tab(TAB_HOME)
             if "www.douyin.com" not in (self._d.current_url or ""):
@@ -555,20 +571,18 @@ class AccountWorker(QThread):
                 self.L("⏳ 加载抖音首页...", "white")
                 time.sleep(5)
 
-            # 加载录制的坐标（兜底用）
-            pos = self._cmt_load_positions()
+            # 使用校准数据（已由 _load_calibration 加载）
+            pos = self._positions
 
-            # ====== 1. 点击通知图标（侦察兵优先，录制坐标兜底） ======
+            # ====== 1. 点击通知图标 ======
             verified = ''
             nx = ny = 0
-            if self._notify_coord:
-                nx, ny = self._notify_coord
-                self.L(f"🔔 侦察兵坐标 ({nx}, {ny})", "white")
-            elif pos and "1_通知图标" in pos:
+            if pos and "1_通知图标" in pos:
                 nx, ny = pos["1_通知图标"]["x"], pos["1_通知图标"]["y"]
-                self.L(f"🔔 录制坐标 ({nx}, {ny})", "yellow")
+                src = pos.get("_source", "校准")
+                self.L(f"🔔 校准坐标 ({nx}, {ny}) [来源:{src}]", "white")
             else:
-                self.L("❌ 无通知按钮坐标（侦察兵失败且无录制坐标），跳过本轮", "yellow")
+                self.L("❌ 无通知按钮坐标，跳过本轮", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
             for attempt in range(3):
@@ -1154,6 +1168,124 @@ class AccountWorker(QThread):
             try: self._d.get(DY_HOME)
             except: pass
 
+    # ═══════════ 手动校准模式 ═══════════
+
+    def enter_calibration_mode(self, as_shared=True):
+        """进入手动校准模式（由GUI调用）
+        as_shared=True: 保存为机器共享校准
+        as_shared=False: 保存为当前账号专属校准
+        """
+        if not self._d:
+            return
+        self._calibration_mode = True
+        self._calib_as_shared = as_shared
+        self.L("📐 进入手动校准模式...", "white")
+        # 校准在浏览器首页进行
+        self._switch_tab(TAB_HOME)
+        if "www.douyin.com" not in (self._d.current_url or ""):
+            self._d.get(DY_HOME)
+            time.sleep(4)
+        self._calib_event.clear()
+
+    def do_calibration_step(self, step_index):
+        """执行单个校准步骤（由GUI触发，用户点击后在JS中监听下一次click事件捕获坐标）
+        step_index: 1-7
+        """
+        if not self._calibration_mode or not self._d:
+            return None
+
+        step_info = CALIBRATION_STEPS[step_index - 1]
+        step_id = step_info["id"]
+        step_label = step_info["label"]
+
+        prompt_text = (
+            f"请在浏览器页面中点击：\n"
+            f"【{step_label}】\n"
+            f"提示：{step_info['tip']}"
+        )
+        self.calib_step.emit(self.name, step_index, prompt_text)
+        self.L(f"📐 [校准 {step_index}/7] 等待点击: {step_label}...", "white")
+
+        # 注入 JS：监听下一次 click 事件，返回点击坐标
+        time.sleep(0.5)
+        result = self._d.execute_script("""
+            (function() {
+                return new Promise(function(resolve) {
+                    var handler = function(e) {
+                        document.removeEventListener('click', handler, true);
+                        // 停止事件传播，让用户点击不触发页面导航
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        var r = {
+                            x: Math.round(e.clientX),
+                            y: Math.round(e.clientY),
+                            tag: e.target.tagName,
+                            text: (e.target.textContent||'').trim().substring(0,30)
+                        };
+                        resolve(r);
+                    };
+                    document.addEventListener('click', handler, true);
+                    // 30秒超时
+                    setTimeout(function() {
+                        document.removeEventListener('click', handler, true);
+                        resolve(null);
+                    }, 30000);
+                });
+            })();
+        """)
+
+        if result:
+            x, y = result.get("x", 0), result.get("y", 0)
+            self.L(f"📐 [校准 {step_index}/7] ✅ 捕获: ({x}, {y}) tag={result.get('tag','?')} text=\"{result.get('text','')}\"", "green")
+            self.calib_captured.emit(self.name, step_index, x, y)
+            return {"x": x, "y": y, "step_id": step_id}
+        else:
+            self.L(f"📐 [校准 {step_index}/7] ⚠ 超时(30s)，未捕获到点击", "yellow")
+            return None
+
+    def exit_calibration_mode(self, captured_steps):
+        """退出校准模式并保存数据
+        captured_steps: {step_id: {x, y}, ...} 或 None（取消）
+        """
+        self._calibration_mode = False
+        self._calib_event.set()
+
+        if not captured_steps or len(captured_steps) < 5:
+            self.L("📐 校准已取消（数据不足）", "yellow")
+            return False
+
+        # 获取视口信息
+        vp = self._d.execute_script(
+            "return {w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1};")
+
+        steps_data = {k: {"x": v["x"], "y": v["y"]} for k, v in captured_steps.items()}
+
+        from calibration_data import save_shared_calibration, save_account_calibration, copy_shared_to_account
+
+        if self._calib_as_shared:
+            save_shared_calibration(steps_data, vp)
+            # 同时复制给当前账号
+            copy_shared_to_account(self.name)
+            self.L("📐 ✅ 校准已保存（本机共享+当前账号）", "green")
+        else:
+            save_account_calibration(self.name, steps_data, vp)
+            self.L(f"📐 ✅ 校准已保存（仅账号: {self.name}）", "green")
+
+        # 重新加载校准数据
+        self._positions = None
+        self._load_calibration()
+        return True
+
+    def get_viewport_steps(self):
+        """获取校准步骤信息（供 GUI 显示用）"""
+        try:
+            vp = self._d.execute_script(
+                "return {w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1};")
+            return {"vw": vp["w"], "vh": vp["h"], "dpr": vp.get("dpr", 1)}
+        except:
+            return {"vw": 1100, "vh": 713, "dpr": 1}
+
     # ═══════════ 分时主循环 ═══════════
 
     def run(self):
@@ -1165,9 +1297,16 @@ class AccountWorker(QThread):
             self.status.emit(self.name, "📱 请扫码登录后点击确认")
             self.waiting_login.emit(self.name)
             self.L("📱 请扫码登录，完成后点击「确认已登录」", "white")
+            self.L("💡 如需手动校准评论坐标，请先点击「📐 手动校准」再确认登录", "white")
 
-            self._login_ok.wait()
+            # 轮询等待登录确认（改为非阻塞，支持校准模式中断）
+            while self._run and not self._login_ok.is_set():
+                time.sleep(0.3)
+
             if not self._run: return
+            if self._calibration_mode:
+                self.L("⚠ 校准模式未退出，自动退出校准", "yellow")
+                self._calibration_mode = False
 
             self.status.emit(self.name, "登录确认中...")
             self.L("⏳ 正在打开私信页面...", "white")
@@ -1176,9 +1315,9 @@ class AccountWorker(QThread):
             self.status.emit(self.name, "已就绪")
             self.L(f"✅ 就绪 | 轮换模式: {CMT_PHASE}s评论→{PM_PHASE}s私信→{REST_PHASE}s休息", "green")
 
-            # ── 侦察兵：精准定位通知按钮 ──
+            # ── 加载校准数据 ──
             if self.cmt_on:
-                self._calibrate_notify()
+                self._load_calibration()
                 # 校准完后回到首页
                 self._switch_tab(TAB_HOME)
                 if "www.douyin.com" not in (self._d.current_url or ""):
@@ -1219,15 +1358,15 @@ class AccountWorker(QThread):
                     if not self._run: break
                     time.sleep(1)
 
-                # ── 检查是否GUI请求了重新校准（线程安全：由worker线程自己执行）──
+                # ── 检查是否GUI请求了重新加载校准（线程安全：由worker线程自己执行）──
                 if self._recal_requested.is_set():
                     self._recal_requested.clear()
-                    self.L("🔄 收到重新校准请求...", "white")
-                    self._calibrate_notify()
-                    ok = self._notify_coord is not None
+                    self.L("🔄 重新加载校准数据...", "white")
+                    self._positions = None
+                    ok = self._load_calibration()
                     self.recal_done.emit(self.name, ok)
                     if ok:
-                        self.L("✅ 重新校准成功", "green")
+                        self.L("✅ 校准数据已重新加载", "green")
                         self._switch_tab(TAB_HOME)
                         if "www.douyin.com" not in (self._d.current_url or ""):
                             self._d.get(DY_HOME)
