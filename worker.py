@@ -79,8 +79,7 @@ class AccountWorker(QThread):
     pm_cnt = pyqtSignal(str, int)
     cmt_cnt = pyqtSignal(str, int)
     stopped = pyqtSignal(str)
-    recal_done = pyqtSignal(str, bool)  # (账号名, 是否成功)
-    calib_step = pyqtSignal(str, int, str)  # (账号名, 步骤号1-7, 描述) — 校准模式对外广播
+    calib_step = pyqtSignal(str, int, str)  # (账号名, 步骤号1-3, 描述) — 校准模式对外广播
     calib_captured = pyqtSignal(str, int, int, int)  # (账号名, 步骤号, x, y) — 捕获到坐标
 
     def __init__(self, cfg, pm_poll=5, cmt_poll=30):
@@ -98,8 +97,7 @@ class AccountWorker(QThread):
         self._cmt_n = 0
         self._login_ok = Event()
         self._last_reply = {}
-        self._positions = None  # 校准后的坐标 dict（替换 _notify_coord）
-        self._recal_requested = Event()
+        self._positions = None  # 校准后的坐标 dict
         self._calibration_mode = False  # 是否处于手动校准模式
         self._calib_event = Event()     # 校准模式下的步骤等待事件
 
@@ -489,11 +487,6 @@ class AccountWorker(QThread):
             return self._d.execute_script(code)
         except:
             return None
-
-    def recalibrate_now(self):
-        """重新加载校准数据"""
-        self._positions = None
-        self._recal_requested.set()
 
     # ── 校准数据加载 ──
     def _load_calibration(self):
@@ -1188,8 +1181,8 @@ class AccountWorker(QThread):
         self._calib_event.clear()
 
     def do_calibration_step(self, step_index):
-        """执行单个校准步骤（由GUI触发，用户点击后在JS中监听下一次click事件捕获坐标）
-        step_index: 1-7
+        """执行单个校准步骤：浏览器内连点5次同一位置自动确认（半径15px内）
+        step_index: 1-3
         """
         if not self._calibration_mode or not self._d:
             return None
@@ -1199,49 +1192,54 @@ class AccountWorker(QThread):
         step_label = step_info["label"]
 
         prompt_text = (
-            f"请在浏览器页面中点击：\n"
+            f"在浏览器中连续点击同一位置 5 次：\n"
             f"【{step_label}】\n"
             f"提示：{step_info['tip']}"
         )
         self.calib_step.emit(self.name, step_index, prompt_text)
-        self.L(f"📐 [校准 {step_index}/7] 等待点击: {step_label}...", "white")
+        self.L(f"📐 [校准 {step_index}/3] 等待5连点: {step_label}...", "white")
 
-        # 注入 JS：监听下一次 click 事件，返回点击坐标
         time.sleep(0.5)
-        result = self._d.execute_script("""
-            (function() {
-                return new Promise(function(resolve) {
-                    var handler = function(e) {
-                        document.removeEventListener('click', handler, true);
-                        // 停止事件传播，让用户点击不触发页面导航
-                        e.preventDefault();
-                        e.stopPropagation();
-                        e.stopImmediatePropagation();
-                        var r = {
-                            x: Math.round(e.clientX),
-                            y: Math.round(e.clientY),
-                            tag: e.target.tagName,
-                            text: (e.target.textContent||'').trim().substring(0,30)
-                        };
-                        resolve(r);
-                    };
-                    document.addEventListener('click', handler, true);
-                    // 30秒超时
-                    setTimeout(function() {
-                        document.removeEventListener('click', handler, true);
-                        resolve(null);
-                    }, 30000);
-                });
-            })();
+
+        # 注入 5 连点检测 JS（使用 execute_async_script 等待异步回调）
+        result = self._d.execute_async_script("""
+            var done = arguments[arguments.length - 1];
+            var clicks = [];
+            var clickHandler = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                clicks.push({x: e.clientX, y: e.clientY});
+                if (clicks.length > 5) clicks.shift();
+                if (clicks.length === 5) {
+                    var avgX = 0, avgY = 0;
+                    for (var i = 0; i < 5; i++) { avgX += clicks[i].x; avgY += clicks[i].y; }
+                    avgX /= 5; avgY /= 5;
+                    var allClose = true;
+                    for (var i = 0; i < 5; i++) {
+                        var dx = clicks[i].x - avgX, dy = clicks[i].y - avgY;
+                        if (Math.sqrt(dx*dx + dy*dy) > 15) { allClose = false; break; }
+                    }
+                    if (allClose) {
+                        document.removeEventListener('click', clickHandler, true);
+                        done({x: Math.round(avgX), y: Math.round(avgY), confirmed: true});
+                    }
+                }
+            };
+            document.addEventListener('click', clickHandler, true);
+            setTimeout(function() {
+                document.removeEventListener('click', clickHandler, true);
+                done(null);
+            }, 120000);
         """)
 
         if result:
             x, y = result.get("x", 0), result.get("y", 0)
-            self.L(f"📐 [校准 {step_index}/7] ✅ 捕获: ({x}, {y}) tag={result.get('tag','?')} text=\"{result.get('text','')}\"", "green")
+            self.L(f"📐 [校准 {step_index}/3] ✅ 5连点确认: ({x}, {y})", "green")
             self.calib_captured.emit(self.name, step_index, x, y)
             return {"x": x, "y": y, "step_id": step_id}
         else:
-            self.L(f"📐 [校准 {step_index}/7] ⚠ 超时(30s)，未捕获到点击", "yellow")
+            self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(120s)，未检测到5连点", "yellow")
             return None
 
     def exit_calibration_mode(self, captured_steps):
@@ -1251,7 +1249,7 @@ class AccountWorker(QThread):
         self._calibration_mode = False
         self._calib_event.set()
 
-        if not captured_steps or len(captured_steps) < 5:
+        if not captured_steps or len(captured_steps) < 3:
             self.L("📐 校准已取消（数据不足）", "yellow")
             return False
 
@@ -1357,22 +1355,6 @@ class AccountWorker(QThread):
                 for _ in range(REST_PHASE):
                     if not self._run: break
                     time.sleep(1)
-
-                # ── 检查是否GUI请求了重新加载校准（线程安全：由worker线程自己执行）──
-                if self._recal_requested.is_set():
-                    self._recal_requested.clear()
-                    self.L("🔄 重新加载校准数据...", "white")
-                    self._positions = None
-                    ok = self._load_calibration()
-                    self.recal_done.emit(self.name, ok)
-                    if ok:
-                        self.L("✅ 校准数据已重新加载", "green")
-                        self._switch_tab(TAB_HOME)
-                        if "www.douyin.com" not in (self._d.current_url or ""):
-                            self._d.get(DY_HOME)
-                            time.sleep(3)
-                    else:
-                        self.L("⚠ 重新校准失败，继续使用旧坐标", "yellow")
 
         except Exception as e:
             self.L(f"❌ 异常: {e}", "red")

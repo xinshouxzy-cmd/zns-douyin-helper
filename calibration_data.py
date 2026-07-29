@@ -17,15 +17,11 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CALIBRATION_FILE = os.path.join(BASE_DIR, "comment_data", "calibration.json")
 
-# 7个校准步骤的定义
+# 3个校准步骤的定义（只需校准前3步，后续步骤由JS动态识别）
 CALIBRATION_STEPS = [
-    {"id": "1_通知图标", "label": "通知铃铛图标", "desc": "点击页面右上角的通知铃铛图标🔔", "tip": "通常在页面右上角，头像左侧"},
-    {"id": "2_全部消息", "label": "「全部消息」按钮", "desc": "点击通知面板中的「全部消息」", "tip": "弹出面板后，找到「全部消息」标签页"},
-    {"id": "3_评论筛选", "label": "「评论」筛选标签", "desc": "点击左侧导航中的「评论」", "tip": "在消息页面左侧的导航栏中"},
-    {"id": "4_第一条评论", "label": "第一条评论内容", "desc": "点击第一条评论（任意一条未回复的评论）", "tip": "点击评论的文字内容区域即可"},
-    {"id": "5_回复按钮", "label": "「回复」按钮", "desc": "点击评论详情中的「回复」按钮", "tip": "在评论展开后的底部或评论文字下方"},
-    {"id": "6_输入框", "label": "回复输入框", "desc": "点击回复输入框", "tip": "展开回复后出现的输入区域"},
-    {"id": "7_发送按钮", "label": "「发送」按钮", "desc": "点击发送按钮 ✉️", "tip": "输入框右侧的发送/纸飞机按钮"},
+    {"id": "1_通知图标", "label": "通知铃铛图标", "desc": "在浏览器中连续点击页面右上角的通知铃铛图标🔔 5次", "tip": "通常在页面右上角，头像左侧。同一位置连点5次自动确认"},
+    {"id": "2_全部消息", "label": "「全部消息」按钮", "desc": "在通知面板中连续点击「全部消息」5次", "tip": "弹出通知面板后，找到并连续点击「全部消息」标签页"},
+    {"id": "3_评论筛选", "label": "「评论」筛选标签", "desc": "在消息页面左侧连续点击「评论」5次", "tip": "在消息页面左侧导航栏中，连续点击「评论」筛选标签"},
 ]
 
 
@@ -70,12 +66,12 @@ def get_positions_for_account(account_name):
     # 1. 检查账号专属校准
     if account_name in cal.get("accounts", {}):
         acc = cal["accounts"][account_name]
-        if acc and len(acc) >= 5:  # 至少有5个有效步骤
+        if acc and len(acc) >= 3:  # 至少有3个有效步骤
             return _format_positions(acc, account_name)
 
     # 2. 检查机器共享校准
     shared = cal.get("shared")
-    if shared and len(shared) >= 5:
+    if shared and len(shared) >= 3:
         return _format_positions(shared, "本机共享")
 
     # 3. 检查录制兜底文件
@@ -141,14 +137,14 @@ def has_shared_calibration():
     """检查是否有机器共享校准"""
     cal = load_calibration()
     shared = cal.get("shared")
-    return shared is not None and len(shared) >= 5
+    return shared is not None and len(shared) >= 3
 
 
 def has_account_calibration(account_name):
     """检查某个账号是否有专属校准"""
     cal = load_calibration()
     acc = cal.get("accounts", {}).get(account_name)
-    return acc is not None and len(acc) >= 5
+    return acc is not None and len(acc) >= 3
 
 
 def _format_positions(raw, source_name):
