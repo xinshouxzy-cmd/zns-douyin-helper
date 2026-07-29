@@ -5,7 +5,7 @@
 基于 PyQt5 + Selenium
 """
 
-import os, sys, json, csv, traceback
+import os, sys, json, csv, traceback, html as _html
 from datetime import datetime
 from threading import Event
 
@@ -931,7 +931,7 @@ class MainWindow(QMainWindow):
             color = C_TEXT; text = msg[7:]
         else:
             color = C_TEXT; text = msg
-        html = f'<span style="color:#888;">{ts}</span> <b style="color:{C_GREEN};">[{name}]</b> <span style="color:{color};">{text}</span>'
+        html = f'<span style="color:#888;">{ts}</span> <b style="color:{C_GREEN};">[{_html.escape(name)}]</b> <span style="color:{color};">{_html.escape(text)}</span>'
         self.log_box.append(html)
         self.log_box.moveCursor(QTextCursor.End)
         if self.log_box.document().blockCount() > 500:

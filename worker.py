@@ -577,16 +577,16 @@ class AccountWorker(QThread):
 
                 # 纯JS hover方案：dispatchEvent 模拟鼠标悬停（不抢前台窗口）
                 # 先用 JS mouseenter/mouseover 触达通知面板（douyin通知是hover触发）
-                self._cmt_js(f"""
-                    (function(cx,cy) {{
+                self._d.execute_script("""
+                    (function(cx,cy) {
                         var el = document.elementFromPoint(cx, cy);
                         if (!el) return;
-                        ['mouseenter','mouseover','mousemove'].forEach(function(t){{
-                            el.dispatchEvent(new MouseEvent(t, {{bubbles:true,cancelable:true,
-                                clientX:cx,clientY:cy,view:window}}));
-                        }});
-                    }})({nx},{ny});
-                """)
+                        ['mouseenter','mouseover','mousemove'].forEach(function(t){
+                            el.dispatchEvent(new MouseEvent(t, {bubbles:true,cancelable:true,
+                                clientX:cx,clientY:cy,view:window}));
+                        });
+                    })(arguments[0], arguments[1]);
+                """, nx, ny)
                 time.sleep(1.8)
 
                 # 然后尝试 JS click（某些douyin版本需要click触发）
@@ -889,20 +889,20 @@ class AccountWorker(QThread):
                 # 录制坐标兜底
                 p_item = pos.get("4_第一条评论") if pos else None
                 if p_item:
-                    ct = self._cmt_js(f"""
-                        var el = document.elementFromPoint({p_item['x']}, {p_item['y']});
+                    ct = self._d.execute_script("""
+                        var el = document.elementFromPoint(arguments[0], arguments[1]);
                         if (!el) return '';
                         var walk = el;
-                        for (var i = 0; i < 6; i++) {{
+                        for (var i = 0; i < 6; i++) {
                             if (walk.parentElement) walk = walk.parentElement;
                             var t = (walk.textContent || '').trim();
-                            if (t.length > 15 && t.length < 300) {{
+                            if (t.length > 15 && t.length < 300) {
                                 walk.setAttribute('data-cmt-first', '1');
                                 return t.substring(0, 120);
-                            }}
-                        }}
+                            }
+                        }
                         return '';
-                    """)
+                    """, p_item['x'], p_item['y'])
 
             if not ct:
                 self.L("⚠ 未找到评论", "yellow")
@@ -1064,19 +1064,19 @@ class AccountWorker(QThread):
                     # 策略B: 录制坐标兜底
                     p_send = pos.get("7_发送按钮") if pos else None
                     if p_send:
-                        btn_clicked = self._cmt_js(f"""
-                            var el = document.elementFromPoint({p_send['x']}, {p_send['y']});
+                        btn_clicked = self._d.execute_script("""
+                            var el = document.elementFromPoint(arguments[0], arguments[1]);
                             if (!el) return false;
-                            for (var i = 0; i < 5; i++) {{
+                            for (var i = 0; i < 5; i++) {
                                 var tag = (el.tagName || '').toLowerCase();
                                 var cls = (el.className || '').toString().toLowerCase();
-                                if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {{
+                                if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {
                                     el.click(); return true;
-                                }}
+                                }
                                 if (el.parentElement) el = el.parentElement;
-                            }}
+                            }
                             el.click(); return true;
-                        """)
+                        """, p_send['x'], p_send['y'])
                         if btn_clicked:
                             self.L("📤 录制坐标发送", "white")
                         else:
