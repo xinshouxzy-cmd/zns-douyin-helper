@@ -428,84 +428,86 @@ class CalibrationWizard(QDialog):
 
         self.btn_start.setVisible(False)
         self.btn_cancel.setText("取消校准")
-        self.lbl_status.setText("⏳ 正在准备浏览器...")
         self.lbl_desc.setText("💡 点击时浏览器无视觉反馈是正常的，大胆连点5次即可！")
-
-        # 连接信号（worker线程 → GUI更新）
-        self.worker.calib_step.connect(self._on_calib_step_signal)
-        self.worker.calib_captured.connect(self._on_captured_signal)
-        self.worker.calib_all_done.connect(self._on_calib_done)
-
-        # 触发 worker 线程中的校准流程
-        self.worker._start_calib.emit()
-
-    def _on_calib_step_signal(self, name, step, text):
-        """worker 线程发出：当前步骤开始"""
-        if self._cancelled:
-            return
-        self.current_step = step
-        self._update_step_display()
-        self.lbl_status.setText(f"⏳ 第{step}/3步：请在浏览器中连点5次...")
-
-    def _on_captured_signal(self, name, step, x, y):
-        """worker 线程发出：某步骤捕获到坐标"""
-        if self._cancelled:
-            return
-        step_id = CALIBRATION_STEPS[step - 1]["id"]
-        self.captured[step_id] = {"x": x, "y": y}
-        self.lbl_status.setText(f"✅ 第{step}/3步已确认: ({x}, {y})")
-        self._update_step_display()
-
-    def _on_calib_done(self, name, captured):
-        """worker 线程发出：校准流程完成"""
-        # 断开所有信号
-        try:
-            self.worker.calib_step.disconnect(self._on_calib_step_signal)
-            self.worker.calib_captured.disconnect(self._on_captured_signal)
-            self.worker.calib_all_done.disconnect(self._on_calib_done)
-        except:
-            pass
-
-        if captured and len(captured) >= 3:
-            self.lbl_step_title.setText("🎉 校准完成！")
-            self.lbl_desc.setText(f"已保存 {len(captured)}/3 个步骤的坐标。\n本机所有账号均可使用此校准数据。")
-            self.lbl_tip.setVisible(False)
-            self._update_progress(3)
-            self.lbl_status.setText("✅ 保存成功")
-
-            QMessageBox.information(self, "校准完成",
-                f"✅ 评论坐标校准完成！\n\n"
-                f"已保存 {len(captured)}/3 个步骤。\n"
-                f"本机所有账号均可共享使用。\n\n"
-                f"现在可以点击「确认已登录」开始自动运行。")
-        else:
-            self.lbl_step_title.setText("⚠ 校准未完成")
-            self.lbl_desc.setText(f"仅捕获 {len(captured or {})}/3 个步骤。\n请检查浏览器后重新校准。")
-            self.lbl_status.setText("⚠ 校准数据不足")
-
-            QMessageBox.warning(self, "校准未完成",
-                f"仅捕获 {len(captured or {})}/3 个步骤，至少需要3步。\n请重新校准。")
-
-        self.accept()
-
-    def _cancel(self):
-        self._cancelled = True
-        self.lbl_status.setText("⏳ 正在取消...")
-        self.btn_cancel.setEnabled(False)
         QApplication.processEvents()
 
-        # 通知 worker 取消（worker 线程会在循环中检查 _calibration_mode 标志）
-        self.worker.cancel_calibration()
+        # 进入校准模式（同步，阻塞GUI但保证Selenium正常工作）
+        self.worker.enter_calibration_mode(as_shared=True)
+
+        # 连接信号
+        self.worker.calib_step.connect(self._on_calib_step_signal)
+        self.worker.calib_captured.connect(self._on_captured_signal)
+
+        # 依次执行3步（每步阻塞最多60s）
+        for step in range(1, 4):
+            if self._cancelled:
+                break
+
+            self.current_step = step
+            self._update_step_display()
+            self.lbl_status.setText(f"⏳ 第{step}/3步：请在浏览器中连点5次...")
+            QApplication.processEvents()
+
+            result = self.worker.do_calibration_step(step)
+
+            if result:
+                self.captured[result["step_id"]] = {"x": result["x"], "y": result["y"]}
+                self.lbl_status.setText(f"✅ 第{step}/3步已确认: ({result['x']}, {result['y']})")
+            else:
+                self.lbl_status.setText(f"⚠ 第{step}/3步超时，已跳过")
+            QApplication.processEvents()
 
         # 断开信号
         try:
             self.worker.calib_step.disconnect(self._on_calib_step_signal)
             self.worker.calib_captured.disconnect(self._on_captured_signal)
-            self.worker.calib_all_done.disconnect(self._on_calib_done)
         except:
             pass
 
-        # calib_all_done 信号不会再发（已经断开），直接关闭对话框
+        # 保存
+        if not self._cancelled:
+            self.lbl_status.setText("💾 正在保存...")
+            QApplication.processEvents()
+            try:
+                ok = self.worker.exit_calibration_mode(self.captured)
+            except Exception as e:
+                ok = False
+                self.lbl_status.setText(f"❌ 保存失败: {e}")
+
+            if ok:
+                QMessageBox.information(self, "校准完成",
+                    f"✅ 评论坐标校准完成！\n\n"
+                    f"已保存 {len(self.captured)}/3 个步骤。\n"
+                    f"本机所有账号均可共享使用。\n\n"
+                    f"现在可以点击「确认已登录」开始自动运行。")
+                self.accept()
+            else:
+                QMessageBox.warning(self, "校准未完成",
+                    f"仅捕获 {len(self.captured)}/3 个步骤，至少需要3步。\n请重新校准。")
+        else:
+            self.reject()
+
+    def _on_calib_step_signal(self, name, step, text):
+        pass  # 同步模式下由 _start 直接处理
+
+    def _on_captured_signal(self, name, step, x, y):
+        pass  # 同步模式下由 _start 直接处理
+
+    def _cancel(self):
+        self._cancelled = True
+        self.lbl_status.setText("⏳ 取消中...（将在当前步骤完成后生效）")
+        self.btn_cancel.setEnabled(False)
+        QApplication.processEvents()
+
+        # 断开信号
+        try:
+            self.worker.calib_step.disconnect(self._on_calib_step_signal)
+            self.worker.calib_captured.disconnect(self._on_captured_signal)
+        except:
+            pass
+
+        # 退出现有校准
+        self.worker._calibration_mode = False
         self.reject()
 
 

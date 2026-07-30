@@ -1,8 +1,8 @@
-VERSION = "v2.2.4"
-# v2.2.4: 修复跨线程WebDriver调用导致点击无反应 (Codex)
-#   - 根因：Selenium WebDriver 不支持跨线程调用，v2.2.3 用 threading.Thread 
-#     跑校准，_d.execute_async_script() 在非 WebDriver 线程中静默失败
-#   - 修复：_start_calib 仅设置 _request_calibration 标志，由 worker 的
-#     run() 轮询循环在自身线程检测并执行 run_calibration_flow()
-#   - 这才是唯一正确的异步方案：标志驱动 + worker 自身线程执行
-#   (基于 v2.2.3)
+VERSION = "v2.2.5"
+# v2.2.5: 回到 v2.2.0 同步方案 — 唯一经过验证的可行方案 (Codex)
+#   - 移除所有异步/跨线程/轮询机制，回到最简方案：
+#     CalibrationWizard._start() 同步调用 enter_calibration_mode → do_calibration_step×3 → exit_calibration_mode
+#   - Selenium execute_async_script 从 GUI 线程发起 HTTP 调用（已验证可行）
+#   - 校准期间 GUI 会短暂无响应（每步最多60s），但这是唯一靠谱的做法
+#   - 修复保存：try-catch 包裹 exit_calibration_mode，不再同时调用 accept+reject
+#   (基于 v2.2.4)
