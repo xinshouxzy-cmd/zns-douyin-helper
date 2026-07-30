@@ -1,7 +1,4 @@
-VERSION = "v2.0.63"
+VERSION = "v2.0.64"
 # 改动
-#       (1) Step 7 发送按钮修复：抖音红色发送按钮是SVG图标（无文字），
-#           改用 v2.0.37 的 elementFromPoint 坐标定位方案
-#       (2) Step 7a 新增：发送前先点击输入框确保焦点
-#       (3) Step 7b：粘贴回复内容到输入框
-#       (4) Step 7c：elementFromPoint 定位SVG/button/send/submit → 点击发送
+#       (1) Step 7 发送改为回车键（Enter），不再找红色SVG发送按钮
+#       (2) 前三步等待间隔缩短：通知3s→2.5s、全部消息3s→2.5s、评论2.5s→2s、验证2s→1.5s

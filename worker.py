@@ -654,7 +654,7 @@ class AccountWorker(QThread):
                 
                 # v2.0.37 方式: ActionChains 移动真实鼠标→触发hover→点击
                 self._cmt_click_at(nx, ny)
-                time.sleep(3.0)
+                time.sleep(2.5)
                 
                 # 简单验证：页面是否有变化
                 ok = self._cmt_js("""
@@ -691,7 +691,7 @@ class AccountWorker(QThread):
                         self.L(f"  重试全部消息 ({mt+1}/3)...", "yellow")
                         time.sleep(1)
                     self._cmt_click_at(mx, my)
-                    time.sleep(3.0)
+                    time.sleep(2.5)
                     ok = self._cmt_js("""
                         if (window.location.href.indexOf('/message')>=0||window.location.href.indexOf('/notice')>=0) return 1;
                         var t = (document.body.innerText||'').length;
@@ -729,7 +729,7 @@ class AccountWorker(QThread):
                             if(r.width>40&&r.height>10){all[i].click();return 1;}}}return 0;
                         """)
                         if not found: break
-                    time.sleep(3.0)
+                    time.sleep(2.5)
                     ok = self._cmt_js("""
                         return (document.body.innerText||'').length > 500 ? 1 : 0;
                     """)
@@ -751,7 +751,7 @@ class AccountWorker(QThread):
                 cx, cy = c_coord["x"], c_coord["y"]
                 self.L(f"\U0001f4ac 点击「评论」@ ({cx}, {cy})", "white")
                 self._cmt_click_at(cx, cy)
-                time.sleep(2.5)
+                time.sleep(2.0)
                 cmt_clicked = True
             else:
                 try:
@@ -783,7 +783,7 @@ class AccountWorker(QThread):
                 self._d.get(DY_HOME); time.sleep(3); return
 
             # 简单验证评论列表
-            time.sleep(2.0)
+            time.sleep(1.5)
             cmt_loaded = self._cmt_js("""
                 var txt = document.body.innerText || '';
                 if (txt.indexOf('天前')>=0||txt.indexOf('小时前')>=0||txt.indexOf('回复')>=0) return 1;
@@ -932,23 +932,19 @@ class AccountWorker(QThread):
                 self.L("\u26a0 未打开回复框", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
-            # ═══ Step 7: 输入回复（先点输入框）+ 发送（SVG图标，无文字） ═══
+            # ═══ Step 7: 输入回复 + 回车发送 ═══
             time.sleep(0.5)
 
             # 7a. 定位输入框并点击，确保焦点在输入框
-            info = self._cmt_js("""
+            self._cmt_js("""
                 var el = document.querySelector('[contenteditable="true"]');
-                if (!el) return null;
+                if (!el) return;
                 var r = el.getBoundingClientRect();
                 if (r.width > 50 && r.height > 10) {
                     el.setAttribute('data-cmt-input', '1');
-                    return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
                 }
-                return null;
             """)
-            if info:
-                self._cmt_click_at(info["x"], info["y"])
-                time.sleep(0.5)
+            time.sleep(0.3)
 
             # 7b. 粘贴回复内容
             try:
@@ -956,50 +952,26 @@ class AccountWorker(QThread):
                 self._paste(self.cmt_text, edt)
             except:
                 self._paste(self.cmt_text)
-            time.sleep(1)
+            time.sleep(0.8)
 
-            # 7c. 发送按钮（红色SVG图标，无文字，用elementFromPoint坐标定位）
-            p_send = pos.get("7_发送按钮") if pos else None
-            clicked = False
-            for attempt in range(3):
-                time.sleep(0.8)
-                if p_send:
-                    btn_clicked = self._cmt_js(f"""
-                        var el = document.elementFromPoint({p_send['x']}, {p_send['y']});
-                        if (!el) return false;
-                        for (var i = 0; i < 5; i++) {{
-                            var tag = (el.tagName || '').toLowerCase();
-                            var cls = (el.className || '').toString().toLowerCase();
-                            if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {{
-                                el.click(); return true;
-                            }}
-                            if (el.parentElement) el = el.parentElement;
-                        }}
-                        el.click();
-                        return true;
-                    """)
-                    if btn_clicked:
-                        self.L("  \u2191 elementFromPoint 点击发送", "white")
-                        clicked = True
-                    else:
-                        self.L("  \u2191 坐标点击发送...", "white")
-                        self._cmt_click_at(p_send["x"], p_send["y"])
-                        clicked = True
-                else:
-                    break
+            # 7c. 回车发送（无需找红色SVG按钮）
+            self.L("  \u21a9 回车发送", "white")
+            try:
+                edt = self._d.find_element(By.CSS_SELECTOR, '[contenteditable="true"]')
+                edt.send_keys(Keys.RETURN)
+            except:
+                pass
+            time.sleep(1.5)
 
-                time.sleep(1.5)
-                verify = self._cmt_js("""
-                    var el = document.querySelector('[contenteditable="true"]');
-                    if (!el) return 1;
-                    return (el.textContent || '').trim().length === 0 ? 1 : 0;
-                """)
-                if verify:
-                    break
-                self.L(f"  \u26a0 未验证到发送成功，重试 {attempt+2}/3...", "yellow")
-
-            if not clicked:
-                self.L("\u26a0 未找到发送按钮", "yellow")
+            verify = self._cmt_js("""
+                var el = document.querySelector('[contenteditable="true"]');
+                if (!el) return 1;
+                return (el.textContent || '').trim().length === 0 ? 1 : 0;
+            """)
+            if verify:
+                self.L("  \u2713 发送成功", "green")
+            else:
+                self.L("  \u26a0 未验证到发送成功", "yellow")
 
             cmt_nickname = ct[:20]
             nick_match = re.match(r'^(.+?)(?:评论|回复|说|：|:)', ct)
