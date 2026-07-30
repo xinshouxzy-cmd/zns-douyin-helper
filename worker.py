@@ -932,34 +932,74 @@ class AccountWorker(QThread):
                 self.L("\u26a0 未打开回复框", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
-            # ═══ Step 7: 输入回复 + 发送 ═══
+            # ═══ Step 7: 输入回复（先点输入框）+ 发送（SVG图标，无文字） ═══
             time.sleep(0.5)
-            self._paste(self.cmt_text)
-            time.sleep(1.5)
 
-            sent = False
-            for attempt in range(3):
-                if attempt > 0:
-                    time.sleep(1)
-                clicked = self._cmt_js("""
-                    var btns=document.querySelectorAll('span,button,div');
-                    for(var i=0;i<btns.length;i++){var t=(btns[i].textContent||'').trim();
-                    if(t==='发送'||t==='回复'||t==='评论'){var r=btns[i].getBoundingClientRect();
-                    if(r.width>30&&r.width<200&&r.y>window.innerHeight*0.4){btns[i].click();return 1;}}}return 0;
-                """)
-                if clicked:
-                    sent = True
-                    break
-            if not sent:
-                self.L("\u26a0 未找到发送按钮", "yellow")
-
-            time.sleep(1.5)
-            verify = self._cmt_js("""
-                var el=document.querySelector('[contenteditable="true"]');
-                if(!el)return 1;return (el.textContent||'').trim().length===0?1:0;
+            # 7a. 定位输入框并点击，确保焦点在输入框
+            info = self._cmt_js("""
+                var el = document.querySelector('[contenteditable="true"]');
+                if (!el) return null;
+                var r = el.getBoundingClientRect();
+                if (r.width > 50 && r.height > 10) {
+                    el.setAttribute('data-cmt-input', '1');
+                    return {x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2)};
+                }
+                return null;
             """)
-            if verify:
-                self.L("  \u2713 发送成功", "green")
+            if info:
+                self._cmt_click_at(info["x"], info["y"])
+                time.sleep(0.5)
+
+            # 7b. 粘贴回复内容
+            try:
+                edt = self._d.find_element(By.CSS_SELECTOR, '[data-cmt-input="1"]')
+                self._paste(self.cmt_text, edt)
+            except:
+                self._paste(self.cmt_text)
+            time.sleep(1)
+
+            # 7c. 发送按钮（红色SVG图标，无文字，用elementFromPoint坐标定位）
+            p_send = pos.get("7_发送按钮") if pos else None
+            clicked = False
+            for attempt in range(3):
+                time.sleep(0.8)
+                if p_send:
+                    btn_clicked = self._cmt_js(f"""
+                        var el = document.elementFromPoint({p_send['x']}, {p_send['y']});
+                        if (!el) return false;
+                        for (var i = 0; i < 5; i++) {{
+                            var tag = (el.tagName || '').toLowerCase();
+                            var cls = (el.className || '').toString().toLowerCase();
+                            if (tag === 'button' || tag === 'svg' || cls.indexOf('send') >= 0 || cls.indexOf('submit') >= 0) {{
+                                el.click(); return true;
+                            }}
+                            if (el.parentElement) el = el.parentElement;
+                        }}
+                        el.click();
+                        return true;
+                    """)
+                    if btn_clicked:
+                        self.L("  \u2191 elementFromPoint 点击发送", "white")
+                        clicked = True
+                    else:
+                        self.L("  \u2191 坐标点击发送...", "white")
+                        self._cmt_click_at(p_send["x"], p_send["y"])
+                        clicked = True
+                else:
+                    break
+
+                time.sleep(1.5)
+                verify = self._cmt_js("""
+                    var el = document.querySelector('[contenteditable="true"]');
+                    if (!el) return 1;
+                    return (el.textContent || '').trim().length === 0 ? 1 : 0;
+                """)
+                if verify:
+                    break
+                self.L(f"  \u26a0 未验证到发送成功，重试 {attempt+2}/3...", "yellow")
+
+            if not clicked:
+                self.L("\u26a0 未找到发送按钮", "yellow")
 
             cmt_nickname = ct[:20]
             nick_match = re.match(r'^(.+?)(?:评论|回复|说|：|:)', ct)
