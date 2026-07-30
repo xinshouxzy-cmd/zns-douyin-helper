@@ -20,10 +20,6 @@ from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QPainter
 
 from worker import AccountWorker, BASE_DIR
-from calibration_data import (
-    CALIBRATION_STEPS, get_calibration_status, load_calibration,
-    save_shared_calibration, save_account_calibration, copy_shared_to_account
-)
 
 try:
     from _version import VERSION
@@ -298,253 +294,6 @@ class SidebarItem(QWidget):
         super().mousePressEvent(event)
 
 
-# ── 手动校准向导对话框 ───────────────────────────────
-class CalibrationWizard(QDialog):
-    """3步手动校准向导 - 按钮驱动，单次点击捕获（与v2.0.49一致，100%可靠）"""
-
-    def __init__(self, worker, account_name, parent=None):
-        super().__init__(parent)
-        self.worker = worker
-        self.account_name = account_name
-        self.current_step = 0  # 0=未开始, 1-3=步骤
-        self.captured = {}  # {step_id: {x, y}}
-        self._cancelled = False
-
-        self.setWindowTitle(f"📐 评论坐标校准 - {account_name}")
-        self.setMinimumSize(500, 380)
-        self.setModal(True)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-
-        self._build_ui()
-        self._update_step_display()
-
-    def _build_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(14)
-
-        # 标题
-        title = QLabel("📐 校准评论回复坐标（3步）")
-        title.setStyleSheet("font-size:18px; font-weight:bold; color:#1A1A1A;")
-        lay.addWidget(title)
-
-        desc = QLabel("请按照指引，在浏览器中依次点击3个关键位置。\n先在浏览器中做好点击准备，再回到本窗口点「已点击，下一步」。")
-        desc.setStyleSheet("color:#666; font-size:13px;")
-        desc.setWordWrap(True)
-        lay.addWidget(desc)
-
-        # 进度条
-        self.pb_frame = QFrame()
-        self.pb_frame.setFixedHeight(8)
-        self.pb_frame.setStyleSheet(f"background:#E5E5E5; border-radius:4px;")
-        self.pb_lay = QHBoxLayout(self.pb_frame)
-        self.pb_lay.setContentsMargins(0, 0, 0, 0)
-        self.pb_bar = QFrame()
-        self.pb_bar.setStyleSheet(f"background:{C_ACCENT}; border-radius:4px;")
-        self.pb_lay.addWidget(self.pb_bar)
-        self.pb_lay.addStretch()
-        lay.addWidget(self.pb_frame)
-
-        # 当前步骤标题
-        self.lbl_step_title = QLabel("")
-        self.lbl_step_title.setStyleSheet("font-size:16px; font-weight:bold; color:#1A1A1A;")
-        self.lbl_step_title.setWordWrap(True)
-        lay.addWidget(self.lbl_step_title)
-
-        # 描述
-        self.lbl_desc = QLabel("")
-        self.lbl_desc.setStyleSheet("color:#444; font-size:14px;")
-        self.lbl_desc.setWordWrap(True)
-        lay.addWidget(self.lbl_desc)
-
-        # 提示框
-        self.lbl_tip = QLabel("")
-        self.lbl_tip.setStyleSheet(f"""
-            background: #FFF8E1; color: #795548;
-            padding: 10px 14px; border-radius: 6px;
-            font-size: 13px; border: 1px solid #FFE082;
-        """)
-        self.lbl_tip.setWordWrap(True)
-        self.lbl_tip.setVisible(False)
-        lay.addWidget(self.lbl_tip)
-
-        # 状态
-        self.lbl_status = QLabel("")
-        self.lbl_status.setStyleSheet("color:#07C160; font-size:13px; font-weight:bold;")
-        self.lbl_status.setWordWrap(True)
-        lay.addWidget(self.lbl_status)
-
-        lay.addStretch()
-
-        # 按钮行1：开始/下一步/跳过
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-
-        self.btn_start = QPushButton("▶ 开始校准")
-        self.btn_start.setStyleSheet(_btn_primary())
-        self.btn_start.setFixedHeight(38)
-        self.btn_start.clicked.connect(self._start)
-        btn_row.addWidget(self.btn_start)
-
-        self.btn_next = QPushButton("✓ 已点击，下一步")
-        self.btn_next.setStyleSheet(_btn_primary())
-        self.btn_next.setFixedHeight(38)
-        self.btn_next.clicked.connect(self._capture_and_next)
-        self.btn_next.setVisible(False)
-        btn_row.addWidget(self.btn_next)
-
-        self.btn_skip = QPushButton("↩ 跳过")
-        self.btn_skip.setStyleSheet(_btn_default())
-        self.btn_skip.setFixedHeight(38)
-        self.btn_skip.clicked.connect(self._skip_step)
-        self.btn_skip.setVisible(False)
-        btn_row.addWidget(self.btn_skip)
-
-        btn_row.addStretch()
-        lay.addLayout(btn_row)
-
-        # 按钮行2：取消
-        btn_row2 = QHBoxLayout()
-        btn_row2.setSpacing(12)
-        btn_row2.addStretch()
-        self.btn_cancel = QPushButton("取消")
-        self.btn_cancel.setStyleSheet(_btn_default())
-        self.btn_cancel.setFixedHeight(38)
-        self.btn_cancel.clicked.connect(self._cancel)
-        btn_row2.addWidget(self.btn_cancel)
-        lay.addLayout(btn_row2)
-
-    def _update_step_display(self):
-        s = self.current_step
-        if s == 0:
-            self.lbl_step_title.setText("准备校准")
-            self.lbl_desc.setText("点击「开始校准」后，按步骤操作：\n先在浏览器中做好点击准备 → 回到本窗口点「已点击，下一步」 → 在浏览器中点击目标位置。")
-            self.lbl_status.setText("💡 请确保浏览器已显示抖音首页")
-            self.lbl_tip.setVisible(False)
-            self.btn_start.setVisible(True)
-            self.btn_next.setVisible(False)
-            self.btn_skip.setVisible(False)
-            self._update_progress(0)
-        elif 1 <= s <= 3:
-            info = CALIBRATION_STEPS[s - 1]
-            done_str = " · ".join([
-                f"{'✅' if CALIBRATION_STEPS[i]['id'] in self.captured else '⬜'} {CALIBRATION_STEPS[i]['label']}"
-                for i in range(3)
-            ])
-            self.lbl_step_title.setText(f"第 {s}/3 步：{info['label']}")
-            self.lbl_desc.setText(info['desc'])
-            self.lbl_tip.setText(f"状态：{done_str}")
-            self.lbl_tip.setVisible(True)
-            self.btn_start.setVisible(False)
-            self.btn_next.setVisible(True)
-            self.btn_skip.setVisible(True)
-            self._update_progress(s - 1)
-
-    def _update_progress(self, step):
-        pct = max(step / 3, 0.02)
-        w = int(pct * self.pb_frame.width())
-        if w > 0:
-            self.pb_bar.setFixedWidth(w)
-
-    def _start(self):
-        if not self.worker._d:
-            self.lbl_status.setText("❌ 浏览器未就绪，请先启动账号")
-            return
-
-        self.worker.enter_calibration_mode(as_shared=True)
-        self.worker.calib_step.connect(self._on_calib_step_signal)
-        self.worker.calib_captured.connect(self._on_captured_signal)
-
-        self.current_step = 1
-        self._update_step_display()
-        self.lbl_status.setText("📐 在第1步：先在浏览器中做好点击准备...")
-
-    def _capture_and_next(self):
-        if self._cancelled:
-            return
-        self.btn_next.setEnabled(False)
-        self.btn_skip.setEnabled(False)
-        self.btn_cancel.setEnabled(False)
-        self.lbl_status.setText(f"⏳ 正在等待第{self.current_step}步点击...（30秒超时）")
-        QApplication.processEvents()
-
-        result = self.worker.do_calibration_step(self.current_step)
-
-        self.btn_next.setEnabled(True)
-        self.btn_skip.setEnabled(True)
-        self.btn_cancel.setEnabled(True)
-
-        if result:
-            self.captured[result["step_id"]] = {"x": result["x"], "y": result["y"]}
-            self.lbl_status.setText(f"✅ 第{self.current_step}步已捕获: ({result['x']}, {result['y']})")
-            self._next_step()
-        else:
-            self.lbl_status.setText(f"⚠ 第{self.current_step}步未捕获到点击，请重试或跳过")
-
-    def _on_calib_step_signal(self, name, step, text):
-        pass  # 按钮驱动，不需要信号处理
-
-    def _on_captured_signal(self, name, step, x, y):
-        pass  # 按钮驱动，不需要信号处理
-
-    def _skip_step(self):
-        self.lbl_status.setText(f"↩ 已跳过第{self.current_step}步")
-        self._next_step()
-
-    def _next_step(self):
-        if self.current_step < 3:
-            self.current_step += 1
-            self._update_step_display()
-            self.lbl_status.setText(f"📐 在第{self.current_step}步：先在浏览器中做好点击准备...")
-        else:
-            self._finish()
-
-    def _finish(self):
-        self.lbl_status.setText("💾 正在保存...")
-        self.btn_next.setVisible(False)
-        self.btn_skip.setVisible(False)
-        self.btn_cancel.setVisible(False)
-        QApplication.processEvents()
-
-        try:
-            self.worker.calib_step.disconnect(self._on_calib_step_signal)
-            self.worker.calib_captured.disconnect(self._on_captured_signal)
-        except:
-            pass
-
-        # 保存校准数据
-        ok = False
-        try:
-            ok = self.worker.exit_calibration_mode(self.captured)
-        except Exception as e:
-            self.lbl_status.setText(f"❌ 保存异常: {e}")
-            QApplication.processEvents()
-
-        if ok:
-            self._update_progress(3)
-            QMessageBox.information(self, "校准完成",
-                f"✅ 评论坐标校准完成！\n\n"
-                f"已保存 {len(self.captured)}/3 个步骤。\n"
-                f"本机所有账号均可共享使用。\n\n"
-                f"现在可以点击「确认已登录」开始自动运行。")
-        else:
-            QMessageBox.warning(self, "校准未完成",
-                f"仅捕获 {len(self.captured)}/3 个步骤，至少需要3步。\n请重新校准。")
-
-        self.accept()
-
-    def _cancel(self):
-        self._cancelled = True
-        try:
-            self.worker.calib_step.disconnect(self._on_calib_step_signal)
-            self.worker.calib_captured.disconnect(self._on_captured_signal)
-        except:
-            pass
-        self.worker._calibration_mode = False
-        self.worker._calib_event.set()
-        self.reject()
-
-
 # ── 每个账号的页面 ─────────────────────────────────
 class AccountPage(QWidget):
     def __init__(self, idx, cfg, main_win):
@@ -591,29 +340,29 @@ class AccountPage(QWidget):
         cn_lay.addWidget(self.le_name)
         lay.addWidget(card_name)
 
-        # ── 确认登录 + 手动校准 ──
-        self.btn_login_row = QWidget()
-        blr_lay = QHBoxLayout(self.btn_login_row)
-        blr_lay.setContentsMargins(0, 0, 0, 0)
-        blr_lay.setSpacing(8)
-
-        self.btn_calibrate = QPushButton("📐 手动校准评论")
-        self.btn_calibrate.setStyleSheet(_btn_default())
-        self.btn_calibrate.clicked.connect(self._open_calibration_wizard)
-        self.btn_calibrate.setVisible(False)
-        self.btn_calibrate.setFixedHeight(42)
-        self.btn_calibrate.setToolTip("登录前手动标记7个评论操作位置，同电脑只需校准一次")
-        blr_lay.addWidget(self.btn_calibrate)
-
+        # ── 确认登录按钮 ──
         self.btn_login = QPushButton("✓ 确认已扫码登录")
         self.btn_login.setStyleSheet(_btn_primary())
         self.btn_login.clicked.connect(self._confirm_login)
         self.btn_login.setVisible(False)
         self.btn_login.setFixedHeight(42)
-        blr_lay.addWidget(self.btn_login)
+        lay.addWidget(self.btn_login)
 
-        self.btn_login_row.setVisible(False)
-        lay.addWidget(self.btn_login_row)
+        # ── 手动校准按钮 ──
+        self.btn_manual_calib = QPushButton("📐 手动校准（坐标录制）")
+        self.btn_manual_calib.setStyleSheet("""
+            QPushButton {
+                background: #ff9800; color: white; font-weight: bold;
+                border-radius: 6px; padding: 8px 12px;
+            }
+            QPushButton:hover {
+                background: #f57c00;
+            }
+        """)
+        self.btn_manual_calib.clicked.connect(self._start_manual_calib)
+        self.btn_manual_calib.setVisible(False)
+        self.btn_manual_calib.setFixedHeight(42)
+        lay.addWidget(self.btn_manual_calib)
 
         # ── 私信回复卡片 ──
         card_pm = Card()
@@ -676,8 +425,15 @@ class AccountPage(QWidget):
         self.btn_export.setStyleSheet(_btn_default())
         self.btn_export.setFixedHeight(42)
         self.btn_export.clicked.connect(self._export_one)
+        self.btn_recal = QPushButton("🔄 重新校准")
+        self.btn_recal.setStyleSheet(_btn_default())
+        self.btn_recal.setFixedHeight(42)
+        self.btn_recal.clicked.connect(self._recalibrate)
+        self.btn_recal.setToolTip("在新电脑上重新定位通知按钮位置")
+        self.btn_recal.setVisible(False)  # 运行时才显示
         btn_row.addStretch()
         btn_row.addWidget(self.btn_start)
+        btn_row.addWidget(self.btn_recal)
         btn_row.addWidget(self.btn_export)
         lay.addLayout(btn_row)
 
@@ -710,37 +466,43 @@ class AccountPage(QWidget):
         """用户点击「确认已登录」"""
         if self.worker:
             self.worker.confirm_login()
-            self.btn_login_row.setVisible(False)
-            self._in_login_wait = False
+            self.btn_login.setVisible(False)
+            self.btn_manual_calib.setVisible(False)
             self._set_status_ui("登录确认中...", C_ACCENT, True, "登录确认中...")
 
-    def _open_calibration_wizard(self):
-        """打开手动校准向导"""
-        if not self.worker or not self.worker._d:
-            QMessageBox.warning(self, "无法校准", "浏览器尚未就绪，请先启动此账号。")
-            return
+    def _recalibrate(self):
+        """手动触发通知按钮定位重新校准（线程安全：通过信号投递到worker线程）"""
+        if self.worker and self.worker.isRunning():
+            self.btn_recal.setEnabled(False)
+            self.btn_recal.setText("⏳ 校准中...")
+            self.main._append_log(self.cfg.get("name", "?"), "[white]🔄 手动触发重新校准（将在下一轮休息时执行）...")
+            self.worker.recal_done.connect(self._on_recal_done)
+            self.worker.recalibrate_now()
+        else:
+            QMessageBox.information(self, "提示", "请先启动账号，校准需要在运行状态下进行。")
 
-        # 检查是否已经登录（登录后不允许校准）
-        if not self._in_login_wait:
-            QMessageBox.warning(self, "无法校准",
-                "程序已开始自动运行，无法进行校准。\n\n"
-                "如需校准，请先停止并重新启动此账号，\n"
-                "在扫码阶段点击「📐 手动校准」。")
-            return
-
-        wizard = CalibrationWizard(self.worker, self.cfg.get("name", "?"), self)
-        wizard.exec_()
-
-        # 校准完成后，如果有数据，标记为已校准
-        status = get_calibration_status(self.cfg.get("name", ""))
-        if status["has_shared"] or status["has_account"]:
-            self._set_status_ui("✅ 校准完成，请确认登录", C_GREEN, True, "已校准")
+    def _on_recal_done(self, name, ok):
+        """校准完成回调（来自 worker 线程的信号）"""
+        if name == self.cfg.get("name"):
+            self.btn_recal.setEnabled(True)
+            self.btn_recal.setText("🔄 重新校准")
+            try:
+                self.worker.recal_done.disconnect(self._on_recal_done)
+            except:
+                pass
+            if ok:
+                self.main._append_log(name, "[green]✅ 校准成功")
+                QMessageBox.information(self, "校准完成", "通知按钮位置已重新定位成功！")
+            else:
+                self.main._append_log(name, "[yellow]⚠ 校准失败，将使用录制坐标兜底")
+                QMessageBox.warning(self, "校准失败", "自动校准未找到通知按钮。\n请确保浏览器在抖音首页，然后重试。\n\n系统将使用 comment_data/positions.json 中的录制坐标作为兜底。")
 
     def _toggle(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.btn_start.setText("⏳ 停止中...")
             self.btn_start.setEnabled(False)
+            self.btn_recal.setVisible(False)
         else:
             self._save()
             self.worker = AccountWorker(self.cfg, PM_POLL, CMT_POLL)
@@ -753,15 +515,39 @@ class AccountPage(QWidget):
             self.worker.start()
             self.btn_start.setText("⏹ 停止")
             self.btn_start.setStyleSheet(_btn_danger())
+            self.btn_recal.setVisible(True)
             self._set_status_ui("启动中...", C_ACCENT, True, "启动中...")
 
     def _on_waiting_login(self, name):
         if name == self.cfg.get("name"):
             self._in_login_wait = True
-            self.btn_login_row.setVisible(True)
             self.btn_login.setVisible(True)
-            self.btn_calibrate.setVisible(True)
+            self.btn_manual_calib.setVisible(True)
             self._set_status_ui("📱 请扫码登录", C_YELLOW, True, "等待扫码登录")
+
+    def _start_manual_calib(self):
+        """启动手动校准（在登录等待期间调用）"""
+        if self.worker and self.worker.isRunning():
+            self.btn_manual_calib.setEnabled(False)
+            self.btn_manual_calib.setText("⏳ 校准中...")
+            self.main._append_log(self.cfg.get("name", "?"), "[white]📐 开始手动校准，请在浏览器中操作...")
+            self.worker.start_calibration()
+            # 连接校准完成信号
+            self.worker.calib_step.connect(self._on_calib_step) 
+        else:
+            QMessageBox.information(self, "提示", "请先启动账号再校准。")
+
+    def _on_calib_step(self, name, msg):
+        """校准步骤回调"""
+        if name == self.cfg.get("name"):
+            self.main._append_log(name, f"[white]{msg}")
+            if msg == "done":
+                self.btn_manual_calib.setEnabled(True)
+                self.btn_manual_calib.setText("📐 手动校准（坐标录制）")
+                try:
+                    self.worker.calib_step.disconnect(self._on_calib_step)
+                except:
+                    pass
 
     def _on_status(self, name, s):
         if name == self.cfg.get("name"):
@@ -781,7 +567,8 @@ class AccountPage(QWidget):
             self.btn_start.setText("▶ 启动")
             self.btn_start.setStyleSheet(_btn_primary())
             self.btn_start.setEnabled(True)
-            self.btn_login_row.setVisible(False)
+            self.btn_login.setVisible(False)
+            self.btn_manual_calib.setVisible(False)
             self._in_login_wait = False
             self._set_status_ui("⏸ 已停止", C_TEXT_SECONDARY, False, "已停止")
 
@@ -814,7 +601,7 @@ class AccountPage(QWidget):
             self.btn_start.setText("▶ 启动")
             self.btn_start.setStyleSheet(_btn_primary())
             self.btn_start.setEnabled(True)
-            self.btn_login_row.setVisible(False)
+            self.btn_login.setVisible(False)
             self._in_login_wait = False
 
         # ── 导出（参照 v42.1 格式）──

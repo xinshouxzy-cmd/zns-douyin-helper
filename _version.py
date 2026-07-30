@@ -1,9 +1,11 @@
-VERSION = "v2.2.6"
-# v2.2.6: 回到v2.0.49方案 — 按钮驱动 + execute_script单次点击 (Codex)
-#   - 彻底放弃 execute_async_script+5连点方案（这是所有问题的根源）
-#   - do_calibration_step: 改用 execute_script+Promise+单次点击(30s)，与v2.0.49一致
-#   - CalibrationWizard: 按钮驱动流程（「已点击，下一步」「跳过」），不再自动循环
-#   - 流程：用户在浏览器做准备 → 回窗口点「已点击，下一步」→ 注入JS监听下一次点击 → 捕获
-#   - exit_calibration_mode: 保护execute_script调用 + 视口获取失败时使用默认值
-#   - 校准坐标在评论流程中优先级最高，DOM搜索兜底
-#   (基于 v2.2.5)
+VERSION = "v2.0.58"
+# 改动: 修复窗口抢占 + 定位准确性 + 安全加固
+#       (1) 移除所有 ActionChains 真实鼠标点击 → 纯JS事件
+#       (2) 通知按钮：ActionChains → JS hover + JS click
+#       (3) _cmt_click_at 零 ActionChains
+#       (4) 坐标加载增加 devicePixelRatio 感知
+#       (5) 侦察兵失败兜底录制坐标
+#       (6) GUI「重新校准」按钮（线程安全）
+#       (7) Chrome 增加 CalculateNativeWinOcclusion 禁用
+#       (8) 安全加固：execute_script 改用 arguments 参数化（防注入）
+#       (9) 安全加固：_append_log HTML 转义（防UI欺骗）
