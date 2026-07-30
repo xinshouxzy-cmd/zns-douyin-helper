@@ -668,12 +668,14 @@ class AccountWorker(QThread):
     # ── 手动校准快速通道：不验证，直接按坐标点 ──
     def _do_fast_cycle(self, pos):
         """手动校准模式：跳过所有页面验证，直接按校准坐标依次点击"""
-        # Step 1: 点击通知铃铛
+        # Step 1: 悬停通知铃铛（抖音通知靠hover触发，不是靠click）
         n_coord = pos.get("1_通知图标")
         if not n_coord:
             self.L("⚠ 缺少通知图标坐标", "yellow")
             return
         self.L(f"🔔 校准坐标 ({n_coord['x']}, {n_coord['y']}) [来源:{self.name}]", "white")
+        self._cmt_hover_at(n_coord["x"], n_coord["y"])
+        time.sleep(1.5)
         self._cmt_click_at(n_coord["x"], n_coord["y"])
         time.sleep(5.0)
 
