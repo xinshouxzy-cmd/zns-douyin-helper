@@ -300,7 +300,7 @@ class SidebarItem(QWidget):
 
 # ── 手动校准向导对话框 ───────────────────────────────
 class CalibrationWizard(QDialog):
-    """3步手动校准向导 - 浏览器内连点5次同一位置自动确认"""
+    """3步手动校准向导 - 按钮驱动，单次点击捕获（与v2.0.49一致，100%可靠）"""
 
     def __init__(self, worker, account_name, parent=None):
         super().__init__(parent)
@@ -311,7 +311,7 @@ class CalibrationWizard(QDialog):
         self._cancelled = False
 
         self.setWindowTitle(f"📐 评论坐标校准 - {account_name}")
-        self.setMinimumSize(480, 350)
+        self.setMinimumSize(500, 380)
         self.setModal(True)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
 
@@ -328,7 +328,7 @@ class CalibrationWizard(QDialog):
         title.setStyleSheet("font-size:18px; font-weight:bold; color:#1A1A1A;")
         lay.addWidget(title)
 
-        desc = QLabel("在浏览器中连续点击同一位置5次即可自动记录。\n同一台电脑只需校准一次，其他账号自动共享。")
+        desc = QLabel("请按照指引，在浏览器中依次点击3个关键位置。\n先在浏览器中做好点击准备，再回到本窗口点「已点击，下一步」。")
         desc.setStyleSheet("color:#666; font-size:13px;")
         desc.setWordWrap(True)
         lay.addWidget(desc)
@@ -376,10 +376,9 @@ class CalibrationWizard(QDialog):
 
         lay.addStretch()
 
-        # 按钮
+        # 按钮行1：开始/下一步/跳过
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        btn_row.addStretch()
 
         self.btn_start = QPushButton("▶ 开始校准")
         self.btn_start.setStyleSheet(_btn_primary())
@@ -387,22 +386,44 @@ class CalibrationWizard(QDialog):
         self.btn_start.clicked.connect(self._start)
         btn_row.addWidget(self.btn_start)
 
+        self.btn_next = QPushButton("✓ 已点击，下一步")
+        self.btn_next.setStyleSheet(_btn_primary())
+        self.btn_next.setFixedHeight(38)
+        self.btn_next.clicked.connect(self._capture_and_next)
+        self.btn_next.setVisible(False)
+        btn_row.addWidget(self.btn_next)
+
+        self.btn_skip = QPushButton("↩ 跳过")
+        self.btn_skip.setStyleSheet(_btn_default())
+        self.btn_skip.setFixedHeight(38)
+        self.btn_skip.clicked.connect(self._skip_step)
+        self.btn_skip.setVisible(False)
+        btn_row.addWidget(self.btn_skip)
+
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        # 按钮行2：取消
+        btn_row2 = QHBoxLayout()
+        btn_row2.setSpacing(12)
+        btn_row2.addStretch()
         self.btn_cancel = QPushButton("取消")
         self.btn_cancel.setStyleSheet(_btn_default())
         self.btn_cancel.setFixedHeight(38)
         self.btn_cancel.clicked.connect(self._cancel)
-        btn_row.addWidget(self.btn_cancel)
-
-        lay.addLayout(btn_row)
+        btn_row2.addWidget(self.btn_cancel)
+        lay.addLayout(btn_row2)
 
     def _update_step_display(self):
         s = self.current_step
         if s == 0:
             self.lbl_step_title.setText("准备校准")
-            self.lbl_desc.setText("点击「开始校准」后，在浏览器中依次连续点击3个关键位置，每个位置连点5次即可自动确认。")
+            self.lbl_desc.setText("点击「开始校准」后，按步骤操作：\n先在浏览器中做好点击准备 → 回到本窗口点「已点击，下一步」 → 在浏览器中点击目标位置。")
             self.lbl_status.setText("💡 请确保浏览器已显示抖音首页")
             self.lbl_tip.setVisible(False)
             self.btn_start.setVisible(True)
+            self.btn_next.setVisible(False)
+            self.btn_skip.setVisible(False)
             self._update_progress(0)
         elif 1 <= s <= 3:
             info = CALIBRATION_STEPS[s - 1]
@@ -415,99 +436,112 @@ class CalibrationWizard(QDialog):
             self.lbl_tip.setText(f"状态：{done_str}")
             self.lbl_tip.setVisible(True)
             self.btn_start.setVisible(False)
+            self.btn_next.setVisible(True)
+            self.btn_skip.setVisible(True)
             self._update_progress(s - 1)
 
     def _update_progress(self, step):
-        pct = step / 3
-        self.pb_bar.setFixedWidth(int(pct * self.pb_frame.width()))
+        pct = max(step / 3, 0.02)
+        w = int(pct * self.pb_frame.width())
+        if w > 0:
+            self.pb_bar.setFixedWidth(w)
 
     def _start(self):
         if not self.worker._d:
             self.lbl_status.setText("❌ 浏览器未就绪，请先启动账号")
             return
 
-        self.btn_start.setVisible(False)
-        self.btn_cancel.setText("取消校准")
-        self.lbl_desc.setText("💡 点击时浏览器无视觉反馈是正常的，大胆连点5次即可！")
-        QApplication.processEvents()
-
-        # 进入校准模式（同步，阻塞GUI但保证Selenium正常工作）
         self.worker.enter_calibration_mode(as_shared=True)
-
-        # 连接信号
         self.worker.calib_step.connect(self._on_calib_step_signal)
         self.worker.calib_captured.connect(self._on_captured_signal)
 
-        # 依次执行3步（每步阻塞最多60s）
-        for step in range(1, 4):
-            if self._cancelled:
-                break
+        self.current_step = 1
+        self._update_step_display()
+        self.lbl_status.setText("📐 在第1步：先在浏览器中做好点击准备...")
 
-            self.current_step = step
+    def _capture_and_next(self):
+        if self._cancelled:
+            return
+        self.btn_next.setEnabled(False)
+        self.btn_skip.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
+        self.lbl_status.setText(f"⏳ 正在等待第{self.current_step}步点击...（30秒超时）")
+        QApplication.processEvents()
+
+        result = self.worker.do_calibration_step(self.current_step)
+
+        self.btn_next.setEnabled(True)
+        self.btn_skip.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
+
+        if result:
+            self.captured[result["step_id"]] = {"x": result["x"], "y": result["y"]}
+            self.lbl_status.setText(f"✅ 第{self.current_step}步已捕获: ({result['x']}, {result['y']})")
+            self._next_step()
+        else:
+            self.lbl_status.setText(f"⚠ 第{self.current_step}步未捕获到点击，请重试或跳过")
+
+    def _on_calib_step_signal(self, name, step, text):
+        pass  # 按钮驱动，不需要信号处理
+
+    def _on_captured_signal(self, name, step, x, y):
+        pass  # 按钮驱动，不需要信号处理
+
+    def _skip_step(self):
+        self.lbl_status.setText(f"↩ 已跳过第{self.current_step}步")
+        self._next_step()
+
+    def _next_step(self):
+        if self.current_step < 3:
+            self.current_step += 1
             self._update_step_display()
-            self.lbl_status.setText(f"⏳ 第{step}/3步：请在浏览器中连点5次...")
-            QApplication.processEvents()
+            self.lbl_status.setText(f"📐 在第{self.current_step}步：先在浏览器中做好点击准备...")
+        else:
+            self._finish()
 
-            result = self.worker.do_calibration_step(step)
+    def _finish(self):
+        self.lbl_status.setText("💾 正在保存...")
+        self.btn_next.setVisible(False)
+        self.btn_skip.setVisible(False)
+        self.btn_cancel.setVisible(False)
+        QApplication.processEvents()
 
-            if result:
-                self.captured[result["step_id"]] = {"x": result["x"], "y": result["y"]}
-                self.lbl_status.setText(f"✅ 第{step}/3步已确认: ({result['x']}, {result['y']})")
-            else:
-                self.lbl_status.setText(f"⚠ 第{step}/3步超时，已跳过")
-            QApplication.processEvents()
-
-        # 断开信号
         try:
             self.worker.calib_step.disconnect(self._on_calib_step_signal)
             self.worker.calib_captured.disconnect(self._on_captured_signal)
         except:
             pass
 
-        # 保存
-        if not self._cancelled:
-            self.lbl_status.setText("💾 正在保存...")
+        # 保存校准数据
+        ok = False
+        try:
+            ok = self.worker.exit_calibration_mode(self.captured)
+        except Exception as e:
+            self.lbl_status.setText(f"❌ 保存异常: {e}")
             QApplication.processEvents()
-            try:
-                ok = self.worker.exit_calibration_mode(self.captured)
-            except Exception as e:
-                ok = False
-                self.lbl_status.setText(f"❌ 保存失败: {e}")
 
-            if ok:
-                QMessageBox.information(self, "校准完成",
-                    f"✅ 评论坐标校准完成！\n\n"
-                    f"已保存 {len(self.captured)}/3 个步骤。\n"
-                    f"本机所有账号均可共享使用。\n\n"
-                    f"现在可以点击「确认已登录」开始自动运行。")
-                self.accept()
-            else:
-                QMessageBox.warning(self, "校准未完成",
-                    f"仅捕获 {len(self.captured)}/3 个步骤，至少需要3步。\n请重新校准。")
+        if ok:
+            self._update_progress(3)
+            QMessageBox.information(self, "校准完成",
+                f"✅ 评论坐标校准完成！\n\n"
+                f"已保存 {len(self.captured)}/3 个步骤。\n"
+                f"本机所有账号均可共享使用。\n\n"
+                f"现在可以点击「确认已登录」开始自动运行。")
         else:
-            self.reject()
+            QMessageBox.warning(self, "校准未完成",
+                f"仅捕获 {len(self.captured)}/3 个步骤，至少需要3步。\n请重新校准。")
 
-    def _on_calib_step_signal(self, name, step, text):
-        pass  # 同步模式下由 _start 直接处理
-
-    def _on_captured_signal(self, name, step, x, y):
-        pass  # 同步模式下由 _start 直接处理
+        self.accept()
 
     def _cancel(self):
         self._cancelled = True
-        self.lbl_status.setText("⏳ 取消中...（将在当前步骤完成后生效）")
-        self.btn_cancel.setEnabled(False)
-        QApplication.processEvents()
-
-        # 断开信号
         try:
             self.worker.calib_step.disconnect(self._on_calib_step_signal)
             self.worker.calib_captured.disconnect(self._on_captured_signal)
         except:
             pass
-
-        # 退出现有校准
         self.worker._calibration_mode = False
+        self.worker._calib_event.set()
         self.reject()
 
 

@@ -1,8 +1,9 @@
-VERSION = "v2.2.5"
-# v2.2.5: 回到 v2.2.0 同步方案 — 唯一经过验证的可行方案 (Codex)
-#   - 移除所有异步/跨线程/轮询机制，回到最简方案：
-#     CalibrationWizard._start() 同步调用 enter_calibration_mode → do_calibration_step×3 → exit_calibration_mode
-#   - Selenium execute_async_script 从 GUI 线程发起 HTTP 调用（已验证可行）
-#   - 校准期间 GUI 会短暂无响应（每步最多60s），但这是唯一靠谱的做法
-#   - 修复保存：try-catch 包裹 exit_calibration_mode，不再同时调用 accept+reject
-#   (基于 v2.2.4)
+VERSION = "v2.2.6"
+# v2.2.6: 回到v2.0.49方案 — 按钮驱动 + execute_script单次点击 (Codex)
+#   - 彻底放弃 execute_async_script+5连点方案（这是所有问题的根源）
+#   - do_calibration_step: 改用 execute_script+Promise+单次点击(30s)，与v2.0.49一致
+#   - CalibrationWizard: 按钮驱动流程（「已点击，下一步」「跳过」），不再自动循环
+#   - 流程：用户在浏览器做准备 → 回窗口点「已点击，下一步」→ 注入JS监听下一次点击 → 捕获
+#   - exit_calibration_mode: 保护execute_script调用 + 视口获取失败时使用默认值
+#   - 校准坐标在评论流程中优先级最高，DOM搜索兜底
+#   (基于 v2.2.5)

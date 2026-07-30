@@ -1224,8 +1224,8 @@ class AccountWorker(QThread):
         self._calib_event.clear()
 
     def do_calibration_step(self, step_index):
-        """执行单个校准步骤：浏览器内连点5次同一位置自动确认（半径15px内）
-        step_index: 1-3
+        """执行单个校准步骤（单次点击检测，使用 execute_script + Promise，30s超时）
+        与 v2.0.49 一致：由「已点击，下一步」按钮触发，注入 JS 监听下一次 click 事件
         """
         if not self._calibration_mode or not self._d:
             return None
@@ -1235,57 +1235,50 @@ class AccountWorker(QThread):
         step_label = step_info["label"]
 
         prompt_text = (
-            f"在浏览器中连续点击同一位置 5 次：\n"
+            f"请在浏览器页面中点击：\n"
             f"【{step_label}】\n"
             f"提示：{step_info['tip']}"
         )
         self.calib_step.emit(self.name, step_index, prompt_text)
-        self.L(f"📐 [校准 {step_index}/3] 等待5连点: {step_label}...", "white")
+        self.L(f"📐 [校准 {step_index}/3] 等待点击: {step_label}...", "white")
 
         time.sleep(0.5)
 
-        # 注入 5 连点检测 JS（拦截点击避免页面乱跳，确认后自动补一发真实点击触发导航）
-        result = self._d.execute_async_script("""
-            var done = arguments[arguments.length - 1];
-            var clicks = [];
-            var clickHandler = function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                clicks.push({x: e.clientX, y: e.clientY});
-                if (clicks.length > 5) clicks.shift();
-                if (clicks.length === 5) {
-                    var avgX = 0, avgY = 0;
-                    for (var i = 0; i < 5; i++) { avgX += clicks[i].x; avgY += clicks[i].y; }
-                    avgX /= 5; avgY /= 5;
-                    var allClose = true;
-                    for (var i = 0; i < 5; i++) {
-                        var dx = clicks[i].x - avgX, dy = clicks[i].y - avgY;
-                        if (Math.sqrt(dx*dx + dy*dy) > 15) { allClose = false; break; }
-                    }
-                    if (allClose) {
-                        document.removeEventListener('click', clickHandler, true);
-                        // 自动补一发真实点击，触发页面导航（如打开通知面板/进入消息页）
-                        var el = document.elementFromPoint(avgX, avgY);
-                        if (el) el.click();
-                        done({x: Math.round(avgX), y: Math.round(avgY), confirmed: true});
-                    }
-                }
-            };
-            document.addEventListener('click', clickHandler, true);
-            setTimeout(function() {
-                document.removeEventListener('click', clickHandler, true);
-                done(null);
-            }, 60000);
+        # 单次点击检测 JS（v2.0.49 原版方案，100% 可靠）
+        result = self._d.execute_script("""
+            (function() {
+                return new Promise(function(resolve) {
+                    var handler = function(e) {
+                        document.removeEventListener('click', handler, true);
+                        // 停止事件传播，让用户点击不触发页面导航
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        var r = {
+                            x: Math.round(e.clientX),
+                            y: Math.round(e.clientY),
+                            tag: e.target.tagName,
+                            text: (e.target.textContent||'').trim().substring(0,30)
+                        };
+                        resolve(r);
+                    };
+                    document.addEventListener('click', handler, true);
+                    // 30秒超时
+                    setTimeout(function() {
+                        document.removeEventListener('click', handler, true);
+                        resolve(null);
+                    }, 30000);
+                });
+            })();
         """)
 
         if result:
             x, y = result.get("x", 0), result.get("y", 0)
-            self.L(f"📐 [校准 {step_index}/3] ✅ 5连点确认: ({x}, {y})", "green")
+            self.L(f"📐 [校准 {step_index}/3] ✅ 捕获: ({x}, {y}) tag={result.get('tag','?')} text=\"{result.get('text','')}\"", "green")
             self.calib_captured.emit(self.name, step_index, x, y)
             return {"x": x, "y": y, "step_id": step_id}
         else:
-            self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(60s)，未检测到5连点", "yellow")
+            self.L(f"📐 [校准 {step_index}/3] ⚠ 超时(30s)，未捕获到点击", "yellow")
             return None
 
     def exit_calibration_mode(self, captured_steps):
@@ -1299,27 +1292,39 @@ class AccountWorker(QThread):
             self.L("📐 校准已取消（数据不足）", "yellow")
             return False
 
-        # 获取视口信息
-        vp = self._d.execute_script(
-            "return {w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1};")
+        # 获取视口信息（可能阻塞，加保护）
+        vp = None
+        try:
+            if self._d:
+                vp = self._d.execute_script(
+                    "return {w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1};")
+        except Exception as e:
+            self.L(f"📐 ⚠ 获取视口失败: {e}，使用默认值", "yellow")
+        if not vp or not isinstance(vp, dict):
+            vp = {"w": 1440, "h": 900, "dpr": 1}
 
         steps_data = {k: {"x": v["x"], "y": v["y"]} for k, v in captured_steps.items()}
 
         from calibration_data import save_shared_calibration, save_account_calibration, copy_shared_to_account
 
-        if self._calib_as_shared:
-            save_shared_calibration(steps_data, vp)
-            # 同时复制给当前账号
-            copy_shared_to_account(self.name)
-            self.L("📐 ✅ 校准已保存（本机共享+当前账号）", "green")
-        else:
-            save_account_calibration(self.name, steps_data, vp)
-            self.L(f"📐 ✅ 校准已保存（仅账号: {self.name}）", "green")
+        try:
+            if self._calib_as_shared:
+                save_shared_calibration(steps_data, vp)
+                copy_shared_to_account(self.name)
+                self.L("📐 ✅ 校准已保存（本机共享+当前账号）", "green")
+            else:
+                save_account_calibration(self.name, steps_data, vp)
+                self.L(f"📐 ✅ 校准已保存（仅账号: {self.name}）", "green")
 
-        # 重新加载校准数据
-        self._positions = None
-        self._load_calibration()
-        return True
+            # 重新加载校准数据
+            self._positions = None
+            self._load_calibration()
+            return True
+        except Exception as e:
+            self.L(f"📐 ❌ 保存校准失败: {e}", "red")
+            import traceback
+            self.L(traceback.format_exc(), "yellow")
+            return False
 
     def get_viewport_steps(self):
         """获取校准步骤信息（供 GUI 显示用）"""
