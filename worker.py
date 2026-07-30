@@ -21,8 +21,6 @@ from selenium.common.exceptions import WebDriverException
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from notification_scout import NotificationScout
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPLIED_DIR = os.path.join(BASE_DIR, "replied_records")
 os.makedirs(REPLIED_DIR, exist_ok=True)
@@ -99,7 +97,6 @@ class AccountWorker(QThread):
         self._login_ok = Event()
         self._calib_requested = Event()  # 登录等待期间的手动校准请求
         self._last_reply = {}
-        self._notify_coord = None  # 侦察兵校准后的通知按钮坐标
         self._recal_requested = Event()  # 线程安全：GUI请求重新校准
 
     def L(self, msg, tag="white"):
@@ -484,27 +481,8 @@ class AccountWorker(QThread):
             return None
 
     def recalibrate_now(self):
-        """线程安全：请求在 worker 线程内重新校准（设置标志位让 run() 循环处理）"""
-        self._notify_coord = None
+        """线程安全：请求在 worker 线程内重新校准"""
         self._recal_requested.set()
-
-    # ── 侦察兵：自校准通知按钮坐标 ──
-    def _calibrate_notify(self):
-        """启动时运行一次侦察兵，精准定位通知按钮坐标"""
-        if self._notify_coord is not None:
-            return  # 已校准过，跳过
-
-        self.L("[侦察兵] 开始自校准定位通知按钮...", "white")
-        try:
-            scout = NotificationScout(self._d, log_func=lambda m: self.L(m, "white"))
-            self._notify_coord = scout.locate()
-            if self._notify_coord:
-                self.L(f"[侦察兵] ✅ 通知按钮已定位: ({self._notify_coord[0]}, {self._notify_coord[1]})", "green")
-            else:
-                self.L("[侦察兵] ⚠ 自校准失败，需要在抖音首页重新运行", "yellow")
-        except Exception as e:
-            self.L(f"[侦察兵] ❌ 异常: {e}", "red")
-            self._notify_coord = None
 
     # ── 手动校准：浏览器内5连点录制3个点位 ──
     def do_manual_calibration(self):
@@ -697,7 +675,7 @@ class AccountWorker(QThread):
             return
         self.L(f"🔔 校准坐标 ({n_coord['x']}, {n_coord['y']}) [来源:{self.name}]", "white")
         self._cmt_click_at(n_coord["x"], n_coord["y"])
-        time.sleep(2.0)
+        time.sleep(5.0)
 
         # Step 2: 点击「全部消息」
         m_coord = pos.get("2_全部消息")
@@ -706,7 +684,7 @@ class AccountWorker(QThread):
             return
         self.L(f"📋 点击「全部消息」@ ({m_coord['x']}, {m_coord['y']})", "white")
         self._cmt_click_at(m_coord["x"], m_coord["y"])
-        time.sleep(2.5)
+        time.sleep(5.0)
 
         # Step 3: 点击「评论」筛选
         c_coord = pos.get("3_评论筛选")
@@ -715,7 +693,7 @@ class AccountWorker(QThread):
             return
         self.L(f"💬 点击「评论」@ ({c_coord['x']}, {c_coord['y']})", "white")
         self._cmt_click_at(c_coord["x"], c_coord["y"])
-        time.sleep(2.5)
+        time.sleep(5.0)
 
         # Step 4-6: 复用原有的DOM扫描逻辑（找评论、找回复按钮、发送）
         try:
@@ -861,17 +839,14 @@ class AccountWorker(QThread):
                 self._do_fast_cycle(pos)
                 return
 
-            # ====== 1. 点击通知图标（侦察兵优先，录制坐标兜底） ======
+            # ====== 1. 点击通知图标（录制坐标） ======
             verified = ''
             nx = ny = 0
-            if self._notify_coord:
-                nx, ny = self._notify_coord
-                self.L(f"🔔 侦察兵坐标 ({nx}, {ny})", "white")
-            elif pos and "1_通知图标" in pos:
+            if pos and "1_通知图标" in pos:
                 nx, ny = pos["1_通知图标"]["x"], pos["1_通知图标"]["y"]
                 self.L(f"🔔 录制坐标 ({nx}, {ny})", "yellow")
             else:
-                self.L("❌ 无通知按钮坐标（侦察兵失败且无录制坐标），跳过本轮", "yellow")
+                self.L("❌ 无通知按钮坐标，跳过本轮", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
 
             for attempt in range(3):
@@ -1467,11 +1442,8 @@ class AccountWorker(QThread):
             self.status.emit(self.name, "已就绪")
             self.L(f"✅ 就绪 | 轮换模式: {CMT_PHASE}s评论→{PM_PHASE}s私信→{REST_PHASE}s休息", "green")
 
-            # ── 侦察兵：精准定位通知按钮 ──
+            # 准备首页环境
             if self.cmt_on:
-                self._calibrate_notify()
-                # 校准完后回到首页
-                self._switch_tab(TAB_HOME)
                 if "www.douyin.com" not in (self._d.current_url or ""):
                     self._d.get(DY_HOME)
                     time.sleep(3)
@@ -1514,17 +1486,14 @@ class AccountWorker(QThread):
                 if self._recal_requested.is_set():
                     self._recal_requested.clear()
                     self.L("🔄 收到重新校准请求...", "white")
-                    self._calibrate_notify()
-                    ok = self._notify_coord is not None
+                    # 重新加载坐标文件
+                    pos = self._cmt_load_positions()
+                    ok = bool(pos and self._has_manual_calib)
                     self.recal_done.emit(self.name, ok)
                     if ok:
-                        self.L("✅ 重新校准成功", "green")
-                        self._switch_tab(TAB_HOME)
-                        if "www.douyin.com" not in (self._d.current_url or ""):
-                            self._d.get(DY_HOME)
-                            time.sleep(3)
+                        self.L("✅ 校准坐标已重新加载", "green")
                     else:
-                        self.L("⚠ 重新校准失败，继续使用旧坐标", "yellow")
+                        self.L("⚠ 未找到手动校准数据，请手动校准", "yellow")
 
         except Exception as e:
             self.L(f"❌ 异常: {e}", "red")

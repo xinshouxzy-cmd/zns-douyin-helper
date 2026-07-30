@@ -1,11 +1,7 @@
-VERSION = "v2.0.58"
-# 改动: 修复窗口抢占 + 定位准确性 + 安全加固
-#       (1) 移除所有 ActionChains 真实鼠标点击 → 纯JS事件
-#       (2) 通知按钮：ActionChains → JS hover + JS click
-#       (3) _cmt_click_at 零 ActionChains
-#       (4) 坐标加载增加 devicePixelRatio 感知
-#       (5) 侦察兵失败兜底录制坐标
-#       (6) GUI「重新校准」按钮（线程安全）
-#       (7) Chrome 增加 CalculateNativeWinOcclusion 禁用
-#       (8) 安全加固：execute_script 改用 arguments 参数化（防注入）
-#       (9) 安全加固：_append_log HTML 转义（防UI欺骗）
+VERSION = "v2.0.59"
+# 改动
+#       (1) 彻底移除侦察兵（NotificationScout），删除所有相关代码
+#       (2) 手动校准快速通道：三步延迟统一改为5秒
+#       (3) 按钮顺序调整：校准在上（Step1），登录在下（Step2）
+#       (4) 首账号强制校准：无校准数据时登录按钮禁用
+#       (5) 后续账号可选复用：显示已有校准来源，可直接登录或重新校准

@@ -340,15 +340,7 @@ class AccountPage(QWidget):
         cn_lay.addWidget(self.le_name)
         lay.addWidget(card_name)
 
-        # ── 确认登录按钮 ──
-        self.btn_login = QPushButton("✓ 确认已扫码登录")
-        self.btn_login.setStyleSheet(_btn_primary())
-        self.btn_login.clicked.connect(self._confirm_login)
-        self.btn_login.setVisible(False)
-        self.btn_login.setFixedHeight(42)
-        lay.addWidget(self.btn_login)
-
-        # ── 手动校准按钮 ──
+        # ── 手动校准按钮（Step 1：必须先校准才能登录） ──
         self.btn_manual_calib = QPushButton("📐 手动校准（坐标录制）")
         self.btn_manual_calib.setStyleSheet("""
             QPushButton {
@@ -358,11 +350,23 @@ class AccountPage(QWidget):
             QPushButton:hover {
                 background: #f57c00;
             }
+            QPushButton:disabled {
+                background: #ccc; color: #888;
+            }
         """)
         self.btn_manual_calib.clicked.connect(self._start_manual_calib)
         self.btn_manual_calib.setVisible(False)
         self.btn_manual_calib.setFixedHeight(42)
         lay.addWidget(self.btn_manual_calib)
+
+        # ── 确认登录按钮（Step 2：校准完成后才能点击） ──
+        self.btn_login = QPushButton("✓ 确认已扫码登录")
+        self.btn_login.setStyleSheet(_btn_primary())
+        self.btn_login.clicked.connect(self._confirm_login)
+        self.btn_login.setVisible(False)
+        self.btn_login.setEnabled(False)
+        self.btn_login.setFixedHeight(42)
+        lay.addWidget(self.btn_login)
 
         # ── 私信回复卡片 ──
         card_pm = Card()
@@ -518,12 +522,39 @@ class AccountPage(QWidget):
             self.btn_recal.setVisible(True)
             self._set_status_ui("启动中...", C_ACCENT, True, "启动中...")
 
+    def _check_calib_status(self):
+        """检查是否有手动校准数据，返回校准信息字典或None"""
+        pos_file = os.path.join(BASE_DIR, "comment_data", "positions.json")
+        if not os.path.exists(pos_file):
+            return None
+        try:
+            with open(pos_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("_manual_calib"):
+                return data
+        except Exception:
+            pass
+        return None
+
     def _on_waiting_login(self, name):
         if name == self.cfg.get("name"):
             self._in_login_wait = True
-            self.btn_login.setVisible(True)
             self.btn_manual_calib.setVisible(True)
-            self._set_status_ui("📱 请扫码登录", C_YELLOW, True, "等待扫码登录")
+            self.btn_login.setVisible(True)
+
+            # 检查是否已有手动校准数据
+            calib_info = self._check_calib_status()
+            if calib_info:
+                # 已有校准数据，可以直接登录
+                src = calib_info.get("_calibrated_by", "?")
+                self.btn_manual_calib.setText(f"📐 重新校准 | 已有校准（{src}）")
+                self.btn_login.setEnabled(True)
+                self._set_status_ui(f"📱 已有校准（{src}），可直接登录", C_YELLOW, True, "等待扫码登录")
+            else:
+                # 首次使用，必须校准
+                self.btn_manual_calib.setText("📐 首次使用，请先校准坐标（必须）")
+                self.btn_login.setEnabled(False)
+                self._set_status_ui("📱 首次使用，请先校准坐标", C_YELLOW, True, "请先校准坐标")
 
     def _start_manual_calib(self):
         """启动手动校准（在登录等待期间调用）"""
@@ -543,7 +574,8 @@ class AccountPage(QWidget):
             self.main._append_log(name, f"[white]{msg}")
             if msg == "done":
                 self.btn_manual_calib.setEnabled(True)
-                self.btn_manual_calib.setText("📐 手动校准（坐标录制）")
+                self.btn_manual_calib.setText("📐 重新校准")
+                self.btn_login.setEnabled(True)
                 try:
                     self.worker.calib_step.disconnect(self._on_calib_step)
                 except:
