@@ -797,32 +797,75 @@ class AccountWorker(QThread):
                 self._d.get(DY_HOME); time.sleep(3); return
             self.L("  \u2713 评论列表已加载", "green")
 
-            # ═══ Step 4: 提取第一条评论（DOM扫描） ═══
+            # ═══ Step 4: 提取第一条评论（坐标优先 → 智能DOM兜底） ═══
             self.L("\U0001f50d 提取第一条评论...", "white")
-            ct = self._cmt_js("""
-                var BLACKLIST=["滚动","鼠标","键盘上下键","查看更多推荐视频","我知道了","上下按钮"];
-                function isHint(t){t=t||'';for(var i=0;i<BLACKLIST.length;i++){if(t.indexOf(BLACKLIST[i])>=0)return 1;}return 0;}
-                var all=document.querySelectorAll('div,li,section');var cand=[];
-                for(var i=0;i<all.length;i++){var el=all[i];var r=el.getBoundingClientRect();
-                if(r.width<150||r.height<40)continue;if(r.y<60||r.y>window.innerHeight*0.9)continue;
-                var txt=(el.textContent||'').trim();if(txt.length<15||txt.length>300)continue;
-                if(isHint(txt))continue;var ec=(txt.match(/[a-zA-Z]/g)||[]).length;if(ec>txt.length*0.5)continue;
-                if(el.querySelectorAll('*').length>80)continue;
-                cand.push({el:el,y:r.y,text:txt.substring(0,120)});}
-                cand.sort(function(a,b){return a.y-b.y;});
-                var seen={},uniq=[];
-                for(var i=0;i<cand.length;i++){var fp=cand[i].text.substring(0,30);
-                if(!seen[fp]){seen[fp]=1;uniq.push(cand[i]);}}
-                if(uniq.length>0){uniq[0].el.setAttribute('data-cmt-first','1');return uniq[0].text;}return'';
-            """)
+            ct = None
+
+            # 策略A：elementFromPoint 定位（v2.0.37 方式，最精准）
+            p_item = pos.get("4_第一条评论") if pos else None
+            if p_item:
+                ct = self._d.execute_script("""
+                    var el = document.elementFromPoint(arguments[0], arguments[1]);
+                    if (!el) return '';
+                    // 向上遍历找有意义的父元素
+                    var target = el;
+                    for (var i = 0; i < 5; i++) {
+                        if (target.parentElement) target = target.parentElement;
+                        var txt = (target.textContent || '').trim();
+                        if (txt.length > 20) break;
+                    }
+                    var text = (target.textContent || '').trim().substring(0, 120);
+                    if (text) target.setAttribute('data-cmt-first', '1');
+                    return text;
+                """, p_item['x'], p_item['y'])
+                if ct:
+                    self.L(f"  坐标定位到评论项 ({p_item['x']}, {p_item['y']})", "white")
+
+            # 策略B：智能DOM扫描（按时间特征找评论项，排除视频描述/话题标签/提示文字）
             if not ct:
-                p_item = pos.get("4_第一条评论") if pos else None
-                if p_item:
-                    ct = self._d.execute_script("""
-                        var el=document.elementFromPoint(arguments[0],arguments[1]);if(!el)return'';
-                        var walk=el;for(var i=0;i<6;i++){if(walk.parentElement)walk=walk.parentElement;
-                        var t=(walk.textContent||'').trim();if(t.length>15&&t.length<300){walk.setAttribute('data-cmt-first','1');return t.substring(0,120);}}return'';
-                    """, p_item['x'], p_item['y'])
+                ct = self._cmt_js("""
+                    var TIME_RE = /(\\d+天前|\\d+小时前|\\d+分钟前|刚刚|昨天\\s*\\d|\\d{1,2}:\\d{2}|\\d{1,2}月\\d{1,2}日)/;
+                    var HINT = ['滚动','鼠标','键盘','我知道了','查看更多','推荐视频','上下按钮','上一页','下一页'];
+                    var all = document.querySelectorAll('div, li');
+                    var cand = [];
+                    for (var i = 0; i < all.length; i++) {
+                        var el = all[i], r = el.getBoundingClientRect();
+                        if (r.width < 180 || r.height < 35) continue;
+                        if (r.y < 80 || r.y > window.innerHeight * 0.85) continue;
+                        var txt = (el.textContent || '').trim();
+                        if (txt.length < 15 || txt.length > 500) continue;
+                        // 跳过纯提示文字
+                        var skip = false;
+                        for (var j = 0; j < HINT.length; j++) {
+                            if (txt.indexOf(HINT[j]) >= 0) { skip = true; break; }
+                        }
+                        if (skip) continue;
+                        // 排除视频描述特征：话题标签#xxx、竖线分隔符
+                        if (/#[^\s#]+/.test(txt)) continue;
+                        if (txt.indexOf('|') >= 0 && txt.length > 60) continue;
+                        // 排除过大的容器元素
+                        if (r.height > 350) continue;
+                        var childCount = 0;
+                        try { childCount = el.querySelectorAll('*').length; } catch(e) {}
+                        if (childCount > 60) continue;
+                        // 必须包含时间特征 或 「回复」按钮
+                        if (TIME_RE.test(txt) || txt.indexOf('回复') >= 0) {
+                            cand.push({el: el, y: r.y, text: txt.substring(0, 120)});
+                        }
+                    }
+                    cand.sort(function(a, b) { return a.y - b.y; });
+                    // 去重
+                    var seen = {}, uniq = [];
+                    for (var i = 0; i < cand.length; i++) {
+                        var fp = cand[i].text.substring(0, 30);
+                        if (!seen[fp]) { seen[fp] = 1; uniq.push(cand[i]); }
+                    }
+                    if (uniq.length > 0) {
+                        uniq[0].el.setAttribute('data-cmt-first', '1');
+                        return uniq[0].text;
+                    }
+                    return '';
+                """)
             if not ct:
                 self.L("\u26a0 未找到评论", "yellow")
                 self._d.get(DY_HOME); time.sleep(3); return
