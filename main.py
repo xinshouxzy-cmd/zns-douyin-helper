@@ -735,6 +735,7 @@ class MainWindow(QMainWindow):
 
         # ① 启动页（工具集合门户）
         self.home_page = HomePage(self)
+        self.home_page.set_version(VERSION)
         self.home_page.enter_dm.connect(self._enter_dm)
         self.home_page.enter_live.connect(self._enter_live)
         self.root_stack.addWidget(self.home_page)
@@ -753,8 +754,20 @@ class MainWindow(QMainWindow):
         sbl.setContentsMargins(0, 0, 0, 0)
         sbl.setSpacing(0)
 
+        btn_back_sidebar = QPushButton("← 返回首页")
+        btn_back_sidebar.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C_TEXT_SIDEBAR};
+                border: 1px solid {C_BORDER}; border-radius: 6px;
+                padding: 8px 12px; font-size: 13px; margin: 12px 12px 4px 12px;
+            }}
+            QPushButton:hover {{ color: {C_ACCENT}; border-color: {C_ACCENT}; }}
+        """)
+        btn_back_sidebar.clicked.connect(self.go_home)
+        sbl.addWidget(btn_back_sidebar)
+
         sb_title = QLabel("📋 账号列表")
-        sb_title.setStyleSheet(f"color:{C_TEXT_SIDEBAR}; font-size:13px; font-weight:bold; padding:16px 16px 12px 16px;")
+        sb_title.setStyleSheet(f"color:{C_TEXT_SIDEBAR}; font-size:13px; font-weight:bold; padding:10px 16px 12px 16px;")
         sbl.addWidget(sb_title)
 
         div = QFrame()
@@ -854,6 +867,7 @@ class MainWindow(QMainWindow):
 
         # ③ 直播助手页面
         self.live_page = LivePage(self)
+        self.live_page.check_update.connect(self._manual_check_update)
         self.root_stack.addWidget(self.live_page)
 
         # 默认显示启动页

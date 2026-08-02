@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip openpyxl requests playwright
+        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip openpyxl requests
 
       - name: Download ChromeDriver (Windows)
         shell: pwsh
@@ -72,7 +72,6 @@ jobs:
             --collect-all PyQt5 `
             --collect-all selenium `
             --collect-all webdriver_manager `
-            --collect-all playwright `
             --hidden-import requests `
             main.py
 
@@ -90,12 +89,13 @@ jobs:
             双击 遵农商_抖音AI工作台.exe 即可运行
             打开后进入工具集合首页（启动页）
             点击「评论私信助手」配置账号并自动回复
-            点击「直播助手」填写扣子 Token 后开启直播评论监控
+            点击「直播助手」配置场景触发规则与知识库后开启监控
 
           【功能】
             - 多账号抖音私信自动回复
             - 多账号抖音评论自动回复
-            - 直播评论实时监控 + AI 话术建议
+            - 直播评论关键词 → 自动触发热键切换直播伴侣场景/特效
+            - 直播知识库问答（观众提问自动弹出答案）
 
           遵义农商银行 出品
           "@ | Out-File -FilePath "dist\遵农商_抖音AI工作台\使用说明.txt" -Encoding UTF8
