@@ -24,6 +24,7 @@ from worker import AccountWorker, BASE_DIR
 import updater
 from home_page import HomePage
 from live_page import LivePage
+from downloader_page import DownloaderPage
 
 try:
     from _version import VERSION
@@ -51,24 +52,24 @@ def save_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-# ── 微信风格配色 ───────────────────────────────────
-C_SIDEBAR_BG = "#2C2C2C"
-C_SIDEBAR_HOVER = "#3A3A3A"
-C_SIDEBAR_ACTIVE = "#3A3A3A"
-C_MAIN_BG = "#F0F0F0"
-C_CARD_BG = "#FFFFFF"
-C_TEXT_PRIMARY = "#1A1A1A"
-C_TEXT_SECONDARY = "#888888"
-C_TEXT_SIDEBAR = "#CCCCCC"
-C_TEXT_SIDEBAR_ACTIVE = "#FFFFFF"
-C_ACCENT = "#07C160"
-C_ACCENT_HOVER = "#06AD56"
-C_RED = "#FA5151"
-C_BORDER = "#E5E5E5"
-C_STATUS_RUNNING = "#07C160"
-C_STATUS_STOPPED = "#B0B0B0"
-C_LOG_BG = "#F8F8F8"
-C_BTN_DISABLED = "#C0C0C0"
+# ── 深色科技风配色（三工具统一，与直播助手同套） ────────
+C_SIDEBAR_BG = "#0d1117"
+C_SIDEBAR_HOVER = "#161b26"
+C_SIDEBAR_ACTIVE = "#1c2333"
+C_MAIN_BG = "#0d1117"
+C_CARD_BG = "#161b26"
+C_TEXT_PRIMARY = "#e8eef7"
+C_TEXT_SECONDARY = "#8b98ad"
+C_TEXT_SIDEBAR = "#a9b4c8"
+C_TEXT_SIDEBAR_ACTIVE = "#ffffff"
+C_ACCENT = "#3d8bff"
+C_ACCENT_HOVER = "#5a9dff"
+C_RED = "#e74c3c"
+C_BORDER = "#263040"
+C_STATUS_RUNNING = "#2ecc71"
+C_STATUS_STOPPED = "#4a5568"
+C_LOG_BG = "#10151d"
+C_BTN_DISABLED = "#2a3342"
 
 # 兼容旧引用
 C_GREEN = C_ACCENT
@@ -80,6 +81,9 @@ C_INPUT = C_CARD_BG
 
 STYLE = f"""
 QMainWindow {{ background: {C_MAIN_BG}; }}
+QDialog {{ background: {C_CARD_BG}; }}
+QMessageBox {{ background: {C_CARD_BG}; }}
+QInputDialog {{ background: {C_CARD_BG}; }}
 QWidget {{
     font-size: 14px;
     font-family: "PingFang SC", "Microsoft YaHei", "SF Pro Display", sans-serif;
@@ -89,8 +93,8 @@ QLineEdit {{
     border: 1px solid {C_BORDER}; border-radius: 6px;
     padding: 10px 14px; font-size: 14px;
 }}
-QLineEdit:focus {{ border-color: {C_ACCENT}; background: #F0FFF5; }}
-QLineEdit:disabled {{ background: #F5F5F5; color: #BBB; }}
+QLineEdit:focus {{ border-color: {C_ACCENT}; background: #1c2333; }}
+QLineEdit:disabled {{ background: #10151d; color: #4a5568; }}
 QTextEdit {{
     background: {C_LOG_BG}; color: {C_TEXT_SECONDARY};
     border: 1px solid {C_BORDER}; border-radius: 6px;
@@ -114,14 +118,14 @@ QScrollBar:vertical {{
     background: transparent; width: 6px; margin: 0;
 }}
 QScrollBar::handle:vertical {{
-    background: #CCC; border-radius: 3px; min-height: 30px;
+    background: #2a3342; border-radius: 3px; min-height: 30px;
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar:horizontal {{
     background: transparent; height: 6px;
 }}
 QScrollBar::handle:horizontal {{
-    background: #CCC; border-radius: 3px; min-width: 30px;
+    background: #2a3342; border-radius: 3px; min-width: 30px;
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 """
@@ -136,8 +140,8 @@ def _btn_primary():
             font-size: 14px; font-weight: bold;
         }}
         QPushButton:hover {{ background: {C_ACCENT_HOVER}; }}
-        QPushButton:pressed {{ background: #05944A; }}
-        QPushButton:disabled {{ background: {C_BTN_DISABLED}; color: #999; }}
+        QPushButton:pressed {{ background: #2f6fd6; }}
+        QPushButton:disabled {{ background: {C_BTN_DISABLED}; color: #556; }}
     """
 
 
@@ -149,9 +153,9 @@ def _btn_danger():
             border-radius: 6px; padding: 10px 24px;
             font-size: 14px; font-weight: bold;
         }}
-        QPushButton:hover {{ background: #E04848; }}
-        QPushButton:pressed {{ background: #C73E3E; }}
-        QPushButton:disabled {{ background: {C_BTN_DISABLED}; color: #999; }}
+        QPushButton:hover {{ background: #c0392b; }}
+        QPushButton:pressed {{ background: #a93226; }}
+        QPushButton:disabled {{ background: {C_BTN_DISABLED}; color: #556; }}
     """
 
 
@@ -159,13 +163,13 @@ def _btn_default():
     """灰色次要按钮"""
     return f"""
         QPushButton {{
-            background: #E5E5E5; color: {C_TEXT_PRIMARY}; border: none;
+            background: #2a3342; color: {C_TEXT_PRIMARY}; border: none;
             border-radius: 6px; padding: 10px 24px;
             font-size: 14px;
         }}
-        QPushButton:hover {{ background: #D5D5D5; }}
-        QPushButton:pressed {{ background: #C5C5C5; }}
-        QPushButton:disabled {{ background: #F0F0F0; color: #BBB; }}
+        QPushButton:hover {{ background: #33405a; }}
+        QPushButton:pressed {{ background: #3d4d6b; }}
+        QPushButton:disabled {{ background: #1c2333; color: #4a5568; }}
     """
 
 
@@ -178,8 +182,8 @@ def _btn(color, text_color="white"):
             font-size: 14px; font-weight: bold;
         }}
         QPushButton:hover {{ opacity: 0.85; }}
-        QPushButton:pressed {{ background: #333; }}
-        QPushButton:disabled {{ background: #555; color: #888; }}
+        QPushButton:pressed {{ background: #3d4d6b; }}
+        QPushButton:disabled {{ background: #2a3342; color: #556; }}
     """
 
 
@@ -194,6 +198,7 @@ class Card(QFrame):
                 border: 1px solid {C_BORDER};
                 border-radius: 10px;
             }}
+            #card:hover {{ border-color: #33405a; }}
         """)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
@@ -226,14 +231,14 @@ class SidebarItem(QWidget):
         self.lbl_name.setStyleSheet(f"color:{C_TEXT_SIDEBAR};font-size:14px;font-weight:500;")
         tv.addWidget(self.lbl_name)
         self.lbl_status = QLabel("已停止")
-        self.lbl_status.setStyleSheet("color:#888;font-size:11px;")
+        self.lbl_status.setStyleSheet("color:#4a5568;font-size:11px;")
         tv.addWidget(self.lbl_status)
         lay.addLayout(tv, 1)
 
         self.btn_close = QPushButton("×")
         self.btn_close.setFixedSize(20, 20)
         self.btn_close.setStyleSheet(f"""
-            QPushButton {{ background:transparent;color:#888;border:none;font-size:16px;font-weight:bold;padding:0; }}
+            QPushButton {{ background:transparent;color:#4a5568;border:none;font-size:16px;font-weight:bold;padding:0; }}
             QPushButton:hover {{ color:{C_RED};background:rgba(255,255,255,0.1);border-radius:10px; }}
         """)
         self.btn_close.clicked.connect(lambda: self.remove_requested.emit(self.idx))
@@ -324,7 +329,7 @@ class AccountPage(QWidget):
         title_row.addStretch()
         self.lb_status = QLabel("⏸ 未启动")
         self.lb_status.setStyleSheet(f"""
-            background: #F0F0F0; color: {C_TEXT_SECONDARY};
+            background: #1c2333; color: {C_TEXT_SECONDARY};
             padding: 4px 14px; border-radius: 12px; font-size: 13px;
         """)
         title_row.addWidget(self.lb_status)
@@ -355,7 +360,7 @@ class AccountPage(QWidget):
                 background: #f57c00;
             }
             QPushButton:disabled {
-                background: #ccc; color: #888;
+                background: #2a3342; color: #556;
             }
         """)
         self.btn_manual_calib.clicked.connect(self._start_manual_calib)
@@ -738,6 +743,7 @@ class MainWindow(QMainWindow):
         self.home_page.set_version(VERSION)
         self.home_page.enter_dm.connect(self._enter_dm)
         self.home_page.enter_live.connect(self._enter_live)
+        self.home_page.enter_downloader.connect(self._enter_downloader)
         self.root_stack.addWidget(self.home_page)
 
         # ② 评论私信助手工作区
@@ -772,7 +778,7 @@ class MainWindow(QMainWindow):
 
         div = QFrame()
         div.setFrameShape(QFrame.HLine)
-        div.setStyleSheet("color:#444;margin:0 12px;")
+        div.setStyleSheet("color:#263040;margin:0 12px;")
         sbl.addWidget(div)
 
         self.sidebar_items_layout = QVBoxLayout()
@@ -793,7 +799,7 @@ class MainWindow(QMainWindow):
         sbl.addWidget(btn_add_sidebar)
 
         ver_lbl = QLabel(f"  {VERSION}")
-        ver_lbl.setStyleSheet("color:#555;font-size:11px;padding:4px 16px 8px 16px;")
+        ver_lbl.setStyleSheet("color:#4a5568;font-size:11px;padding:4px 16px 8px 16px;")
         sbl.addWidget(ver_lbl)
 
         root.addWidget(sidebar_frame)
@@ -868,7 +874,14 @@ class MainWindow(QMainWindow):
         # ③ 直播助手页面
         self.live_page = LivePage(self)
         self.live_page.check_update.connect(self._manual_check_update)
+        self.live_page.go_home.connect(self.go_home)
         self.root_stack.addWidget(self.live_page)
+
+        # ④ 无水印视频下载器页面
+        self.downloader_page = DownloaderPage(self)
+        self.downloader_page.check_update.connect(self._manual_check_update)
+        self.downloader_page.go_home.connect(self.go_home)
+        self.root_stack.addWidget(self.downloader_page)
 
         # 默认显示启动页
         self.root_stack.setCurrentWidget(self.home_page)
@@ -892,6 +905,10 @@ class MainWindow(QMainWindow):
     def _enter_live(self):
         """从启动页进入直播助手"""
         self.root_stack.setCurrentWidget(self.live_page)
+
+    def _enter_downloader(self):
+        """从启动页进入无水印视频下载器"""
+        self.root_stack.setCurrentWidget(self.downloader_page)
 
     def go_home(self):
         """返回启动页（停止所有后台活动）"""
@@ -956,7 +973,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
 
         title = QLabel("📋 新建抖音客服账号")
-        title.setStyleSheet("font-size:16px; font-weight:bold; color:#1A1A1A;")
+        title.setStyleSheet("font-size:16px; font-weight:bold; color:#e8eef7;")
         layout.addWidget(title)
 
         form = QFormLayout()
@@ -982,7 +999,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(form)
 
         tip = QLabel("💡 以上为默认话术，如需自定义可直接修改，不改直接点确定即可。")
-        tip.setStyleSheet("color:#888; font-size:12px;")
+        tip.setStyleSheet("color:#8b98ad; font-size:12px;")
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
@@ -1198,12 +1215,12 @@ class MainWindow(QMainWindow):
             color = C_TEXT; text = msg[7:]
         else:
             color = C_TEXT; text = msg
-        html = f'<span style="color:#888;">{ts}</span> <b style="color:{C_GREEN};">[{_html.escape(name)}]</b> <span style="color:{color};">{_html.escape(text)}</span>'
+        html = f'<span style="color:#6a7a92;">{ts}</span> <b style="color:{C_GREEN};">[{_html.escape(name)}]</b> <span style="color:{color};">{_html.escape(text)}</span>'
         self.log_box.append(html)
         self.log_box.moveCursor(QTextCursor.End)
         if self.log_box.document().blockCount() > 500:
             self.log_box.clear()
-            self.log_box.append('<span style="color:#888;">[日志自动清理]</span>')
+            self.log_box.append('<span style="color:#6a7a92;">[日志自动清理]</span>')
 
     def _export_log(self):
         """导出运行日志为 txt 文件（供远程排障分析）"""
