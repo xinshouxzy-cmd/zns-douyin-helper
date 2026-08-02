@@ -263,7 +263,7 @@ class HomePage(QWidget):
                     d = math.sqrt(d2)
                     alpha = int(70 * (1 - d / link_r))
                     p.setPen(QPen(QColor(120, 170, 255, alpha), 1))
-                    p.drawLine(xs[i], ys[i], xs[j], ys[j])
+                    p.drawLine(int(xs[i]), int(ys[i]), int(xs[j]), int(ys[j]))
         # 粒子
         for pt in pts:
             col = pt["c"]
