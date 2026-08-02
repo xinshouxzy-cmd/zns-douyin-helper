@@ -3,7 +3,7 @@ chcp 65001 >nul
 title 遵农商·抖音客服助手 - Windows 一键构建
 
 echo ============================================
-echo   遵农商·抖音客服助手 v1.2 一键构建
+echo   遵农商·抖音客服助手 v2.0.65 一键构建
 echo   调试版（需目标电脑安装 Chrome）
 echo ============================================
 echo.
@@ -72,7 +72,7 @@ if %errorlevel% neq 0 (
 :: ── 使用说明 ──
 (
 echo ============================================================
-echo     遵农商·抖音客服助手 v1.2
+echo     遵农商·抖音客服助手 v2.0.65
 echo     遵义农商银行 出品
 echo ============================================================
 echo.
@@ -93,7 +93,7 @@ echo.
 
 :: ── 打包 ZIP ──
 echo 打包 ZIP...
-set ZIP_NAME=遵农商_抖音客服助手_v1.2_Windows.zip
+set ZIP_NAME=遵农商_抖音客服助手_v2.0.65_Windows.zip
 if exist "dist\%ZIP_NAME%" del "dist\%ZIP_NAME%"
 powershell -Command "Compress-Archive -Path 'dist\遵农商_抖音客服助手\*' -DestinationPath 'dist\%ZIP_NAME%'" -Force >nul
 

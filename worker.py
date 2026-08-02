@@ -114,8 +114,42 @@ class AccountWorker(QThread):
         self._calib_requested.set()
 
     # ── 浏览器 ──
+    def _env_diag(self):
+        """环境自检：输出系统版本、屏幕缩放、分辨率到日志（用于远程排障）"""
+        import platform
+        try:
+            self.L("── 环境自检 ──", "cyan")
+            self.L(f"系统: {platform.platform()}", "white")
+            self.L(f"Python: {sys.version.split()[0]} | 架构: {platform.machine()}", "white")
+            if sys.platform == "win32":
+                import ctypes
+                try:
+                    ctypes.windll.user32.SetProcessDPIAware()
+                    sw = ctypes.windll.user32.GetSystemMetrics(0)
+                    sh = ctypes.windll.user32.GetSystemMetrics(1)
+                    self.L(f"屏幕分辨率: {sw} x {sh}", "white")
+                    try:
+                        dpi = ctypes.windll.user32.GetDpiForSystem()
+                        self.L(f"系统缩放: {dpi / 96 * 100:.0f}% (DPI={dpi})", "white")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            elif sys.platform == "darwin":
+                try:
+                    import subprocess as sp
+                    out = sp.check_output(["system_profiler", "SPDisplaysDataType"]).decode()
+                    m = re.search(r"Resolution: (\d+) x (\d+)", out)
+                    if m:
+                        self.L(f"屏幕分辨率: {m.group(1)} x {m.group(2)}", "white")
+                except Exception:
+                    pass
+        except Exception as e:
+            self.L(f"⚠ 环境自检失败: {e}", "yellow")
+
     def _start_browser(self):
         self.L("正在准备浏览器...", "white")
+        self._env_diag()
         opt = Options()
         bundled = get_bundled_chrome()
         bundled_drv = find_chromedriver()
@@ -186,8 +220,10 @@ class AccountWorker(QThread):
         opt.add_argument(f"--user-data-dir={self.profile}")
         opt.add_argument("--disable-backgrounding-occluded-windows")
         opt.add_argument("--disable-renderer-backgrounding")
-        opt.add_argument("--disable-features=TranslateUI,CalculateNativeWinOcclusion")
-        opt.add_argument("--force-device-scale-factor=1")
+        opt.add_argument("--disable-background-timer-throttling")
+        opt.add_argument("--disable-features=TranslateUI,CalculateNativeWinOcclusion,OptimizationGuideModelDownloading,MediaRouter")
+        opt.add_argument("--no-first-run")
+        opt.add_argument("--no-default-browser-check")
         opt.add_experimental_option("excludeSwitches", ["enable-automation"])
         opt.add_experimental_option("useAutomationExtension", False)
         opt.add_experimental_option("detach", True)
@@ -207,7 +243,27 @@ class AccountWorker(QThread):
             raise
         d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
             {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
-        d.set_window_size(1100, 800)
+        # 窗口自适应屏幕（不超过屏幕的 90%，避免小屏/缩放导致窗口越界）
+        _win_w, _win_h = 1100, 800
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                ctypes.windll.user32.SetProcessDPIAware()
+                _sw = ctypes.windll.user32.GetSystemMetrics(0)
+                _sh = ctypes.windll.user32.GetSystemMetrics(1)
+            else:
+                _sw, _sh = 1920, 1080
+            _win_w = min(_win_w, int(_sw * 0.9))
+            _win_h = min(_win_h, int(_sh * 0.9))
+        except Exception:
+            pass
+        d.set_window_size(_win_w, _win_h)
+        try:
+            _bv = d.capabilities.get("browserVersion", "?")
+            _dv = d.capabilities.get("chrome", {}).get("chromedriverVersion", "?").split(" ")[0]
+            self.L(f"Chrome 版本: {_bv} | ChromeDriver: {_dv}", "white")
+        except Exception:
+            pass
         self.L("加载抖音首页...", "white")
         d.get(DY_HOME)
         time.sleep(5)

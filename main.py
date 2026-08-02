@@ -746,6 +746,13 @@ class MainWindow(QMainWindow):
         log_hdr = QHBoxLayout()
         log_hdr.addWidget(QLabel("📋 运行日志"))
         log_hdr.addStretch()
+        btn_export_log = QPushButton("导出日志")
+        btn_export_log.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{C_TEXT_SECONDARY}; border:none; font-size:12px; }}
+            QPushButton:hover {{ color:{C_ACCENT}; }}
+        """)
+        btn_export_log.clicked.connect(self._export_log)
+        log_hdr.addWidget(btn_export_log)
         btn_clear_log = QPushButton("清空")
         btn_clear_log.setStyleSheet(f"""
             QPushButton {{ background:transparent; color:{C_TEXT_SECONDARY}; border:none; font-size:12px; }}
@@ -976,6 +983,26 @@ class MainWindow(QMainWindow):
         if self.log_box.document().blockCount() > 500:
             self.log_box.clear()
             self.log_box.append('<span style="color:#888;">[日志自动清理]</span>')
+
+    def _export_log(self):
+        """导出运行日志为 txt 文件（供远程排障分析）"""
+        default_name = f"抖音助手日志_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        path, _ = QFileDialog.getSaveFileName(self, "导出日志", default_name, "文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            text = self.log_box.toPlainText()
+            if not text.strip():
+                QMessageBox.information(self, "导出日志", "日志为空，无需导出")
+                return
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"遵农商·抖音客服助手 {VERSION} 运行日志\n")
+                f.write(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(text)
+            self._append_log("系统", "[green]✓ 日志已导出: " + path)
+        except Exception as e:
+            QMessageBox.warning(self, "导出日志", f"导出失败: {e}")
 
 
 def main():
