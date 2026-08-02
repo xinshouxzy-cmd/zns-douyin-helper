@@ -1,7 +1,8 @@
-VERSION = "v2.0.65"
+VERSION = "v2.0.66"
 # 改动
-#       (1) 环境自检：启动时输出系统版本/屏幕缩放/分辨率/Chrome版本到日志（远程排障用）
-#       (2) 启动参数适配新 Chrome：补充 --disable-background-timer-throttling、--no-first-run 等，
-#           保留遮挡检测禁用（防"抢窗口"），移除写死的 --force-device-scale-factor=1
-#       (3) 窗口大小自适应屏幕（不超过屏幕90%），避免小屏/高缩放导致窗口越界
-#       (4) 主界面新增「导出日志」按钮，一键导出运行日志为 txt 供分析
+#       (1) 工具集合整合版：新增启动页（门户页 home_page.py），
+#           打开软件先展示工具入口卡片，点击进入『评论私信助手』或『直播助手』
+#       (2) 新增直播助手页面（live_page.py）：整合原 live_assistant.py，
+#           Playwright 监控直播评论 + 扣子 Coze AI 生成回复话术，独立配置/启停
+#       (3) 顶层工具栈 root_stack：启动页 → 评论私信助手 / 直播助手，支持返回首页
+#       (4) 保留云端自动更新（updater.py）与统计上报（reportStats）

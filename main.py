@@ -14,12 +14,16 @@ from PyQt5.QtWidgets import (
     QTabWidget, QPushButton, QLabel, QTextEdit, QLineEdit, QTabBar,
     QCheckBox, QGroupBox, QScrollArea, QMessageBox, QFileDialog, QFrame,
     QInputDialog, QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy,
-    QGraphicsDropShadowEffect, QDialog, QFormLayout, QDialogButtonBox
+    QGraphicsDropShadowEffect, QDialog, QFormLayout, QDialogButtonBox,
+    QProgressDialog
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QPainter
 
 from worker import AccountWorker, BASE_DIR
+import updater
+from home_page import HomePage
+from live_page import LivePage
 
 try:
     from _version import VERSION
@@ -27,7 +31,7 @@ except Exception:
     VERSION = "v2.0"
 
 # ── 配置 ──────────────────────────────────────────
-APP_TITLE = f"遵农商·抖音客服助手 {VERSION} — 辛振宇"
+APP_TITLE = f"遵农商·抖音AI工作台 {VERSION} — 辛振宇"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_PM_REPLY = "遵义地区政策了解，留下☎️"
 DEFAULT_CMT_REPLY = "具体抖音✉️"
@@ -673,6 +677,43 @@ class AccountPage(QWidget):
             + ("\n功能已自动恢复运行。" if was_running else ""))
 
 
+# ── 更新线程 ──────────────────────────────────────
+class UpdateCheckThread(QThread):
+    """检查云端是否有新版本"""
+    done = pyqtSignal(object)  # 传 updater.check_update 的结果（dict 或 None）
+
+    def __init__(self, current_version, parent=None):
+        super().__init__(parent)
+        self.current_version = current_version
+
+    def run(self):
+        self.done.emit(updater.check_update(self.current_version))
+
+
+class UpdateDownloadThread(QThread):
+    """下载更新包（带进度）"""
+    progress = pyqtSignal(int, int)   # done, total
+    success = pyqtSignal(str)         # 保存路径
+    failed = pyqtSignal(str)          # 错误信息
+
+    def __init__(self, url, auth, token, save_path, parent=None):
+        super().__init__(parent)
+        self.url = url
+        self.auth = auth
+        self.token = token
+        self.save_path = save_path
+
+    def run(self):
+        try:
+            updater.download_update(
+                self.url, self.auth, self.token, self.save_path,
+                progress_cb=lambda d, t: self.progress.emit(d, t),
+            )
+            self.success.emit(self.save_path)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 # ── 主窗口 ────────────────────────────────────────
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -684,7 +725,23 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ═══════════ 顶层工具栈（启动页 → 各工具）═══════════
+        self.root_stack = QStackedWidget()
+        outer.addWidget(self.root_stack)
+
+        # ① 启动页（工具集合门户）
+        self.home_page = HomePage(self)
+        self.home_page.enter_dm.connect(self._enter_dm)
+        self.home_page.enter_live.connect(self._enter_live)
+        self.root_stack.addWidget(self.home_page)
+
+        # ② 评论私信助手工作区
+        self.dm_workspace = QWidget()
+        root = QHBoxLayout(self.dm_workspace)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
@@ -781,15 +838,52 @@ class MainWindow(QMainWindow):
         btn_stop.setStyleSheet(_btn_danger())
         btn_stop.clicked.connect(lambda: self._all_toggle(False))
         btm.addWidget(btn_stop)
+        btn_check = QPushButton("🔄 检查更新")
+        btn_check.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{C_TEXT_SECONDARY};
+                border:1px solid {C_BORDER}; border-radius:6px;
+                padding:8px 16px; font-size:13px; }}
+            QPushButton:hover {{ color:{C_ACCENT}; border-color:{C_ACCENT}; }}
+        """)
+        btn_check.clicked.connect(self._manual_check_update)
+        btm.addWidget(btn_check)
         right.addLayout(btm)
 
         root.addLayout(right, 1)
+        self.root_stack.addWidget(self.dm_workspace)
+
+        # ③ 直播助手页面
+        self.live_page = LivePage(self)
+        self.root_stack.addWidget(self.live_page)
+
+        # 默认显示启动页
+        self.root_stack.setCurrentWidget(self.home_page)
 
         self._pages = []       # AccountPage 列表
         self._sidebar_items = []  # QWidget (sidebar item) 列表
+        self._updater_thread = None
         self._load_accounts()
         if len(self._pages) == 0:
             QTimer.singleShot(300, self._show_new_account_wizard)
+
+        # 启动后自动检查更新（静默）+ 统计上报（静默）
+        QTimer.singleShot(2500, self._auto_check_update)
+        QTimer.singleShot(6000, self._report_usage)
+
+    # ── 工具切换 ──
+    def _enter_dm(self):
+        """从启动页进入评论私信助手"""
+        self.root_stack.setCurrentWidget(self.dm_workspace)
+
+    def _enter_live(self):
+        """从启动页进入直播助手"""
+        self.root_stack.setCurrentWidget(self.live_page)
+
+    def go_home(self):
+        """返回启动页（停止所有后台活动）"""
+        if self.live_page:
+            self.live_page._stop_if_running()
+        self.root_stack.setCurrentWidget(self.home_page)
 
     # ── 侧边栏操作 ──
     def _update_sidebar_name(self, idx, name):
@@ -964,6 +1058,119 @@ class MainWindow(QMainWindow):
             elif not start and running:
                 page._toggle()
 
+    # ── 更新检查 / 统计上报 ──
+    def _auto_check_update(self):
+        """启动后自动检查（静默，失败不打扰）"""
+        self._check_update(silent=True)
+
+    def _manual_check_update(self):
+        """手动点击『检查更新』（结果必提示）"""
+        self._check_update(silent=False)
+
+    def _check_update(self, silent):
+        if self._updater_thread and self._updater_thread.isRunning():
+            return
+        self._updater_thread = UpdateCheckThread(VERSION, self)
+        self._updater_thread.done.connect(lambda info: self._on_check_done(info, silent))
+        self._updater_thread.start()
+
+    def _on_check_done(self, info, silent):
+        if not info:
+            if not silent:
+                QMessageBox.information(self, "检查更新", "无法连接更新服务器，请稍后重试。")
+            return
+        if not info.get("hasUpdate"):
+            if not silent:
+                QMessageBox.information(self, "检查更新", f"已是最新版本 {VERSION}")
+            return
+        self._show_update_dialog(info)
+
+    def _show_update_dialog(self, info):
+        latest = info.get("latestVersion") or ""
+        notes = (info.get("notes") or "").strip()
+        size = int(info.get("size") or 0)
+        force = bool(info.get("force"))
+        size_txt = f"{size/1024/1024:.1f} MB" if size else "未知"
+        msg = (
+            f"发现新版本 {latest}（当前 {VERSION}）\n\n"
+            f"更新包大小：{size_txt}\n\n"
+        )
+        if notes:
+            msg += f"更新内容：\n{notes}\n"
+        msg += "\n是否立即下载更新？"
+
+        box = QMessageBox(self)
+        box.setWindowTitle("发现新版本")
+        box.setIcon(QMessageBox.Information)
+        box.setText(msg)
+        btn_dl = box.addButton("立即更新", QMessageBox.AcceptRole)
+        if not force:
+            box.addButton("稍后再说", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is btn_dl:
+            self._start_download_update(info)
+
+    def _start_download_update(self, info):
+        url = info.get("downloadUrl")
+        auth = info.get("downloadAuth")
+        token = info.get("downloadToken")
+        latest = info.get("latestVersion") or "latest"
+        if not url or not auth:
+            QMessageBox.warning(self, "下载失败", "未获取到有效的下载地址，请稍后重试。")
+            return
+        save_dir = os.path.join(BASE_DIR, "updates")
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"zns-douyin-helper-{latest}.zip")
+
+        self._dl_progress = QProgressDialog("正在下载更新包…", None, 0, 0, self)
+        self._dl_progress.setWindowTitle("下载更新")
+        self._dl_progress.setWindowModality(Qt.WindowModal)
+        self._dl_progress.setMinimumDuration(0)
+        self._dl_progress.setValue(0)
+        self._dl_progress.show()
+
+        self._dl_thread = UpdateDownloadThread(url, auth, token, save_path, self)
+        self._dl_thread.progress.connect(self._on_download_progress)
+        self._dl_thread.success.connect(self._on_download_success)
+        self._dl_thread.failed.connect(self._on_download_failed)
+        self._dl_thread.start()
+
+    def _on_download_progress(self, done, total):
+        if total > 0:
+            pct = int(done * 100 / total)
+            self._dl_progress.setMaximum(100)
+            self._dl_progress.setValue(pct)
+            self._dl_progress.setLabelText(
+                f"正在下载更新包… {done/1024/1024:.1f}/{total/1024/1024:.1f} MB"
+            )
+        else:
+            self._dl_progress.setValue(0)
+
+    def _on_download_success(self, path):
+        if getattr(self, "_dl_progress", None):
+            self._dl_progress.close()
+        QMessageBox.information(
+            self, "下载完成",
+            f"更新包已下载至：\n{path}\n\n"
+            "请退出本程序后，将压缩包解压并覆盖到程序目录，即可完成更新。"
+        )
+
+    def _on_download_failed(self, err):
+        if getattr(self, "_dl_progress", None):
+            self._dl_progress.close()
+        QMessageBox.warning(self, "下载失败", f"下载更新包失败：\n{err}")
+
+    # ── 统计上报（静默） ──
+    def _report_usage(self):
+        try:
+            cfg = load_config()
+            updater.report_stats(
+                CONFIG_FILE, VERSION,
+                account_count=len(cfg.get("accounts", [])),
+            )
+        except Exception:
+            pass
+
 
     def _append_log(self, name, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -996,7 +1203,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "导出日志", "日志为空，无需导出")
                 return
             with open(path, "w", encoding="utf-8") as f:
-                f.write(f"遵农商·抖音客服助手 {VERSION} 运行日志\n")
+                f.write(f"遵农商·抖音AI工作台 {VERSION} 运行日志\n")
                 f.write(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write("=" * 60 + "\n\n")
                 f.write(text)

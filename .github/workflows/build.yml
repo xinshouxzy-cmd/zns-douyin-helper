@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip openpyxl
+        run: pip install pyinstaller selenium webdriver-manager PyQt5 pyperclip openpyxl requests playwright
 
       - name: Download ChromeDriver (Windows)
         shell: pwsh
@@ -57,9 +57,12 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          pyinstaller --onedir --windowed --name "遵农商_抖音客服助手" `
+          pyinstaller --onedir --windowed --name "遵农商_抖音AI工作台" `
             --add-data "config.json;." `
             --add-data "worker.py;." `
+            --add-data "updater.py;." `
+            --add-data "home_page.py;." `
+            --add-data "live_page.py;." `
             --add-data "_version.py;." `
             --add-data "replied_records;replied_records" `
             --add-data "chrome_profiles;chrome_profiles" `
@@ -69,35 +72,40 @@ jobs:
             --collect-all PyQt5 `
             --collect-all selenium `
             --collect-all webdriver_manager `
+            --collect-all playwright `
+            --hidden-import requests `
             main.py
 
       - name: Add readme
         shell: pwsh
         run: |
           @"
-          遵农商·抖音客服助手 v$env:VERSION
+          遵农商·抖音AI工作台 v$env:VERSION
           ===================================
 
           【使用前请确保已安装 Chrome 浏览器】
             如未安装，请先下载: https://www.google.cn/chrome/
 
           【使用方法】
-            双击 遵农商_抖音客服助手.exe 即可运行
-            首次使用需扫码登录抖音创作者平台
+            双击 遵农商_抖音AI工作台.exe 即可运行
+            打开后进入工具集合首页（启动页）
+            点击「评论私信助手」配置账号并自动回复
+            点击「直播助手」填写扣子 Token 后开启直播评论监控
 
           【功能】
             - 多账号抖音私信自动回复
             - 多账号抖音评论自动回复
+            - 直播评论实时监控 + AI 话术建议
 
           遵义农商银行 出品
-          "@ | Out-File -FilePath "dist\遵农商_抖音客服助手\使用说明.txt" -Encoding UTF8
+          "@ | Out-File -FilePath "dist\遵农商_抖音AI工作台\使用说明.txt" -Encoding UTF8
 
       - name: Package zip
         shell: pwsh
         run: |
           @'
           import shutil, os
-          src = r'dist\遵农商_抖音客服助手'
+          src = r'dist\遵农商_抖音AI工作台'
           dst_name = f'ZNS_Douyin_Helper_v{os.environ["VERSION_NUM"]}'
           shutil.make_archive(dst_name, 'zip', src)
           print('Created: ' + dst_name + '.zip')
@@ -108,14 +116,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "遵农商_抖音客服助手_v${{ env.VERSION_NUM }}"
-          path: "dist/遵农商_抖音客服助手/**"
+          name: "遵农商_抖音AI工作台_v${{ env.VERSION_NUM }}"
+          path: "dist/遵农商_抖音AI工作台/**"
 
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "${{ env.VERSION }}-${{ env.BUILD_ID }}"
-          name: "遵农商·抖音客服助手 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
+          name: "遵农商·抖音AI工作台 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
           files: "ZNS_Douyin_Helper_v${{ env.VERSION_NUM }}.zip"
           prerelease: false
         continue-on-error: true
