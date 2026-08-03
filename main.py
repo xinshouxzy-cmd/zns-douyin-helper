@@ -786,6 +786,16 @@ class MainWindow(QMainWindow):
         sbl.addLayout(self.sidebar_items_layout)
         sbl.addStretch()
 
+        # 🔕 静默模式：评论回复用 JS 静默点击，浏览器不抢窗口焦点（默认开启）
+        self.cb_silent = QCheckBox("🔕 静默模式（不抢窗口）")
+        self.cb_silent.setChecked(load_config().get("silent_mode", True))
+        self.cb_silent.setStyleSheet(f"""
+            QCheckBox {{ color: {C_TEXT_SIDEBAR}; font-size: 12px; padding: 2px 16px; }}
+            QCheckBox::indicator {{ width: 14px; height: 14px; }}
+        """)
+        self.cb_silent.toggled.connect(self._on_silent_toggled)
+        sbl.addWidget(self.cb_silent)
+
         btn_add_sidebar = QPushButton("＋ 新增账号")
         btn_add_sidebar.setStyleSheet(f"""
             QPushButton {{
@@ -957,6 +967,19 @@ class MainWindow(QMainWindow):
         # 默认选中第一项
         if idx == 0:
             self._on_sidebar_click(0)
+
+    def _on_silent_toggled(self, on):
+        """静默模式开关：评论回复不抢窗口（JS 静默点击优先）"""
+        try:
+            cfg = load_config()
+            cfg["silent_mode"] = bool(on)
+            save_config(cfg)
+            self.statusBar().showMessage(
+                f"静默模式已{'开启（浏览器不抢窗口）' if on else '关闭（兼容模式，评论回复可能抢焦点）'}，下一轮自动生效",
+                6000,
+            )
+        except Exception:
+            pass
 
     def _add_account(self):
         self._show_new_account_wizard()

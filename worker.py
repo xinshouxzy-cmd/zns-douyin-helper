@@ -28,6 +28,18 @@ os.makedirs(REPLIED_DIR, exist_ok=True)
 DY_HOME = "https://www.douyin.com"
 PM_URL = "https://www.douyin.com/chat?isPopup=1"
 
+
+def _load_global_cfg():
+    """读取 config.json 顶层全局配置（线程内安全，不依赖外部导入）"""
+    try:
+        p = os.path.join(BASE_DIR, "config.json")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
 TAB_HOME = 0
 TAB_PM = 1
 CMT_PHASE = 30
@@ -89,6 +101,7 @@ class AccountWorker(QThread):
         self.cmt_on = cfg.get("comment_enabled", True)
         self.cmt_text = cfg.get("comment_reply", "感谢关注！")
         self.profile = os.path.join(BASE_DIR, cfg.get("chrome_profile", "chrome_profiles/account_1"))
+        self.silent_mode = _load_global_cfg().get("silent_mode", True)
         self._run = True
         self._d = None
         self._has_manual_calib = False
@@ -456,11 +469,40 @@ class AccountWorker(QThread):
 
     # ═══════════ 评论回复（v2.0.37 ActionChains 真实鼠标点击 + 手动校准） ═══════════
 
+    def _cmt_click_js(self, x, y):
+        """JS 静默点击：elementFromPoint + dispatchEvent（与私信回复同款方案）。
+        不移动真实鼠标、不激活窗口，从根本上不抢焦点。
+        补全 hover 序列（mouseover/mouseenter/mousemove）以触发抖音浮窗。"""
+        js = """
+            var el = document.elementFromPoint(arguments[0], arguments[1]);
+            if (!el) return 0;
+            var r = el.getBoundingClientRect();
+            if (!r || (r.width === 0 && r.height === 0)) return 0;
+            var types = ['pointerover','mouseover','mouseenter','mousemove',
+                         'pointerdown','mousedown','pointerup','mouseup','click'];
+            for (var i = 0; i < types.length; i++) {
+                var ev;
+                try { ev = new PointerEvent(types[i], {bubbles:true, cancelable:true, view:window, pointerId:1}); }
+                catch(e) { ev = new MouseEvent(types[i], {bubbles:true, cancelable:true, view:window}); }
+                el.dispatchEvent(ev);
+            }
+            return 1;
+        """
+        try:
+            return self._d.execute_script(js, int(x), int(y))
+        except Exception:
+            return None
+
     def _cmt_click_at(self, x, y, retries=3):
-        """用 ActionChains 模拟真实鼠标点击（视口绝对坐标）。
-        move_to_element_with_offset 会移动真实鼠标光标到目标位置，
-        此移动过程本身就触发抖音的 hover 事件（如通知铃铛浮窗）。
-        这是 v2.0.37 已验证的可靠方案。"""
+        """点击（视口绝对坐标）。
+        静默模式（默认开，不抢窗口）：先 JS 静默点击，失败才回退真实鼠标（会抢一次窗口）。
+        兼容模式（关）：始终用 ActionChains 真实鼠标（v2.0.37 方案，最可靠但会抢焦点）。"""
+        if self.silent_mode:
+            for i in range(retries):
+                if self._cmt_click_js(x, y):
+                    return True
+                time.sleep(0.5)
+            self.L("⚠ JS 静默点击无效，回退真实鼠标（本次会抢一次窗口）", "yellow")
         try:
             body = self._d.find_element(By.TAG_NAME, "body")
             cx, cy = self._d.execute_script("""
@@ -485,9 +527,10 @@ class AccountWorker(QThread):
         pass
 
     def _reload_config(self):
-        """运行时重新读取配置，支持实时开关私信/评论"""
+        """运行时重新读取配置，支持实时开关私信/评论/静默模式"""
         try:
-            cfg = load_config()
+            cfg = _load_global_cfg()
+            self.silent_mode = cfg.get("silent_mode", self.silent_mode)
             for ac in cfg.get("accounts", []):
                 if ac.get("name") == self.name:
                     self.pm_on = ac.get("pm_enabled", True)

@@ -23,16 +23,29 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_DIR = os.path.join(BASE_DIR, "无水印视频下载")
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1")
+# 完整浏览器请求头（关键！缺头会被抖音风控返回空数据，安卓端正是带了 Accept 才能解析成功）
+HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://www.douyin.com/",
+    "Connection": "keep-alive",
+}
 
 
 # ── 核心解析逻辑（移植自 UniApp 无水印下载器） ──────────
 def extract_video_id(text):
-    """从分享链接/口令中提取视频ID"""
+    """从分享链接/口令中提取视频ID，支持完整链接和 v.douyin.com 短链"""
+    # 1) 直接匹配数字 ID 格式
     for pat in (r"/share/video/(\d+)", r"/video/(\d+)",
                 r"video_id=(\d+)", r"aweme_id=(\d+)", r"modal_id=(\d+)"):
         m = re.search(pat, text)
         if m:
             return m.group(1)
+    # 2) v.douyin.com 短链 → 返回短链，由 parse_douyin 跳转解析
+    m = re.search(r"https?://v\.douyin\.com/[A-Za-z0-9_\-]+", text)
+    if m:
+        return "short:" + m.group(0)
     return None
 
 
@@ -81,18 +94,41 @@ def find_video_info(router):
     return items[0] if items else None
 
 
+def _resolve_short_url(short_url):
+    """解析 v.douyin.com 短链 → 返回真实视频ID或None"""
+    try:
+        r = requests.get(short_url, headers=HEADERS, timeout=15,
+                         allow_redirects=True)
+        vid = extract_video_id(r.url)
+        if vid and not vid.startswith("short:"):
+            return vid
+        # 跳转后页面 HTML 里也可能带 ID
+        vid = extract_video_id(r.text)
+        if vid and not vid.startswith("short:"):
+            return vid
+    except Exception:
+        pass
+    return None
+
+
 def parse_douyin(url):
     """解析抖音分享链接，返回视频信息 dict 或抛异常"""
     vid = extract_video_id(url)
     if not vid:
         raise ValueError("未能从链接中识别出视频ID，请检查分享链接是否完整")
+    # v.douyin.com 短链 → 先跳转解析真实 ID
+    if vid.startswith("short:"):
+        real_vid = _resolve_short_url(vid[6:])
+        if not real_vid:
+            raise ValueError("短链接解析失败：无法获取视频ID，请用视频详情页链接重试")
+        vid = real_vid
     r = requests.get(f"https://www.iesdouyin.com/share/video/{vid}",
-                     headers={"User-Agent": UA}, timeout=15)
+                     headers=HEADERS, timeout=15)
     r.raise_for_status()
     router = extract_router_data(r.text)
     item = find_video_info(router)
     if not item:
-        raise ValueError("解析失败：页面结构可能已更新，请稍后再试")
+        raise ValueError("解析失败：视频可能已被删除，或页面结构已更新，请稍后再试")
     v = item.get("video") or {}
     play_list = (v.get("play_addr") or {}).get("url_list") or []
     if not play_list:
