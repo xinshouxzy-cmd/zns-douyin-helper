@@ -900,8 +900,8 @@ class MainWindow(QMainWindow):
         self._sidebar_items = []  # QWidget (sidebar item) 列表
         self._updater_thread = None
         self._load_accounts()
-        if len(self._pages) == 0:
-            QTimer.singleShot(300, self._show_new_account_wizard)
+        # 注意：不再「启动即弹创建账号」——新建电脑/清空账号时打开软件应停在首页，
+        # 只有进入「评论私信助手」时才引导创建账号（见 _enter_dm）
 
         # 启动后自动检查更新（静默）+ 统计上报（静默）
         QTimer.singleShot(2500, self._auto_check_update)
@@ -909,8 +909,10 @@ class MainWindow(QMainWindow):
 
     # ── 工具切换 ──
     def _enter_dm(self):
-        """从启动页进入评论私信助手"""
+        """从启动页进入评论私信助手（无账号时先引导创建）"""
         self.root_stack.setCurrentWidget(self.dm_workspace)
+        if len(self._pages) == 0:
+            QTimer.singleShot(150, self._show_new_account_wizard)
 
     def _enter_live(self):
         """从启动页进入直播助手"""
