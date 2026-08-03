@@ -4,7 +4,7 @@
 直播评论关键词监控 → 自动触发热键 → 直播伴侣切换场景/特效 + 知识库问答
 （整合自《与遵同行助农兴企AI直播助手 v1.5.9》，selenium 驱动方案与评论私信助手统一）
 """
-import os, sys, json, time, re
+import os, sys, json, time, re, threading
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
@@ -118,9 +118,14 @@ class LiveMonitor(QThread):
         super().__init__(parent)
         self.cfg = cfg
         self._run = True
+        self._confirmed = threading.Event()
 
     def stop(self):
         self._run = False
+
+    def confirm_login(self):
+        """用户已扫码登录，手动确认 → 跳过评论区元素等待，直接开始监控"""
+        self._confirmed.set()
 
     def L(self, msg):
         self.log.emit(msg)
@@ -210,11 +215,11 @@ class LiveMonitor(QThread):
         d.get(url)
         waited = 0
         try:
-            while self._run and waited < 180:
+            while self._run and waited < 180 and not self._confirmed.is_set():
                 if d.find_elements(By.CSS_SELECTOR, sel):
                     break
-                time.sleep(2)
-                waited += 2
+                time.sleep(0.5)
+                waited += 0.5
         except Exception:
             pass
         if not self._run:
@@ -224,7 +229,11 @@ class LiveMonitor(QThread):
                 pass
             self.done.emit("已停止", True)
             return
-        if waited >= 180:
+        if self._confirmed.is_set():
+            # 用户手动确认已登录：不再依赖评论区元素，直接开始监控
+            self.L("✓ 已确认登录，开始监控（间隔 {interval}s）".format(interval=interval))
+            self.status.emit("监控中", C_GREEN)
+        elif waited >= 180:
             self.L("[yellow]⚠ 未检测到评论区，请确认已扫码登录且正在开播")
             self.status.emit("未检测到评论区", C_RED)
         else:
@@ -388,11 +397,16 @@ class LivePage(QWidget):
         self.btn_start = QPushButton("▶ 开始监控")
         self.btn_start.setStyleSheet(STYLE_BTN_ACC)
         self.btn_start.clicked.connect(self._start)
+        self.btn_confirm = QPushButton("✅ 我已登录，开始监控")
+        self.btn_confirm.setStyleSheet(f"QPushButton {{ background: #1a4d2e; color: #7dffb0; border: 1px solid #2e7d4f; border-radius: 6px; padding: 6px 14px; }}")
+        self.btn_confirm.setEnabled(False)
+        self.btn_confirm.clicked.connect(self._confirm_login)
         self.btn_stop = QPushButton("⏹ 停止监控")
         self.btn_stop.setStyleSheet(STYLE_BTN)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop)
         ctrl.addWidget(self.btn_start)
+        ctrl.addWidget(self.btn_confirm)
         ctrl.addWidget(self.btn_stop)
         ctrl.addStretch(1)
         ctrl.addWidget(self._mk("监控日志", 11, C_SUB))
@@ -469,7 +483,15 @@ class LivePage(QWidget):
         self.monitor.done.connect(self._on_done)
         self.monitor.start()
         self.btn_start.setEnabled(False)
+        self.btn_confirm.setEnabled(True)
         self.btn_stop.setEnabled(True)
+
+    def _confirm_login(self):
+        """用户扫码登录后手动确认：立即跳过等待，开始监控"""
+        if self.monitor and self.monitor.isRunning():
+            self.monitor.confirm_login()
+            self._append_log("[green]✓ 已确认登录，立即开始监控")
+            self.btn_confirm.setEnabled(False)
 
     def _stop(self):
         if self.monitor:
@@ -482,6 +504,7 @@ class LivePage(QWidget):
 
     def _on_done(self, msg, ok):
         self.btn_start.setEnabled(True)
+        self.btn_confirm.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self._set_status(msg, C_GREEN if ok else C_RED)
 
