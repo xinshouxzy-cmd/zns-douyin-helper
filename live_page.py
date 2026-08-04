@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QFrame, QLineEdit, QDoubleSpinBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QTextEdit,
 )
+from selenium.webdriver.common.by import By
 from worker import BASE_DIR, find_chromedriver, get_bundled_chrome
 
 CONFIG_PATH = os.path.join(BASE_DIR, "live_config.json")
@@ -56,6 +57,13 @@ def send_hotkey(codes):
 DEFAULT_CONFIG = {
     "live_url": "https://anchor.douyin.com/anchor/dashboard",
     "comment_selector": ".comment-item",
+    "comment_selectors": [
+        ".comment-item",
+        ".webcast-chatroom___items .webcast-chatroom___item",
+        "[class*='chatroom'] [class*='item']",
+        "[class*='comment'] [class*='item']",
+        "[class*='chat'] [class*='item']",
+    ],
     "poll_interval": 0.5, "cooldown": 2.0,
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
     "scenes": [
@@ -81,6 +89,12 @@ def load_config():
             for k in cfg:
                 if k in user:
                     cfg[k] = user[k]
+            # 旧配置没有 comment_selectors 时补默认链
+            if not cfg.get("comment_selectors"):
+                cfg["comment_selectors"] = list(DEFAULT_CONFIG["comment_selectors"])
+            if str(cfg.get("comment_selector", "")).strip() and \
+               str(cfg["comment_selector"]).strip() not in cfg["comment_selectors"]:
+                cfg["comment_selectors"].insert(0, str(cfg["comment_selector"]).strip())
         except Exception:
             pass
     return cfg
@@ -187,11 +201,102 @@ class LiveMonitor(QThread):
             self.log.emit(f"[red]监控异常：{e}")
             self.done.emit(f"监控异常：{e}", False)
 
+    # ── 评论采集：选择器链 + MutationObserver 双通道 ──
+    @staticmethod
+    def _looks_like_comment(t):
+        """粗过滤：去掉纯数字/纯符号/超长文本，剩下的按评论处理"""
+        t = (t or "").strip()
+        if not t or len(t) < 1 or len(t) > 120:
+            return False
+        if t.isdigit():
+            return False
+        if re.fullmatch(r"[\W_\s]+", t):
+            return False
+        return True
+
+    def _inject_observer(self, d):
+        """注入 MutationObserver：页面新增的短文本实时收集到 window.__liveCommentBuf
+        不依赖任何 class 名，评论 DOM 怎么变都能抓到。"""
+        js = r"""
+        (function(){
+          if (window.__liveObserverInstalled) return 'already';
+          window.__liveCommentBuf = [];
+          var buf = window.__liveCommentBuf;
+          function pushText(t){
+            t = (t||'').replace(/\s+/g,' ').trim();
+            if (t && t.length >= 1 && t.length <= 120) buf.push({text:t, t:Date.now()});
+          }
+          function sniff(n){
+            if (n.nodeType === 3) { pushText(n.nodeValue); return; }
+            if (n.nodeType !== 1) return;
+            var tag = (n.tagName||'').toLowerCase();
+            if (tag === 'script' || tag === 'style' || tag === 'svg') return;
+            pushText(n.textContent);
+            var w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT, null);
+            while (w.nextNode()) pushText(w.currentNode.nodeValue);
+          }
+          var mo = new MutationObserver(function(recs){
+            for (var i=0;i<recs.length;i++){
+              var r = recs[i];
+              for (var j=0;j<r.addedNodes.length;j++) sniff(r.addedNodes[j]);
+            }
+          });
+          mo.observe(document.body, {childList:true, subtree:true});
+          window.__liveObserverInstalled = true;
+          return 'ok';
+        })()
+        """
+        try:
+            return d.execute_script(js)
+        except Exception as e:
+            return "err:" + str(e)
+
+    def _drain_js_comments(self, d):
+        """取走 JS 缓冲里的新文本（取完清空）"""
+        try:
+            return d.execute_script(
+                "var a=window.__liveCommentBuf||[];window.__liveCommentBuf=[];return a;")
+        except Exception:
+            return []
+
+    def _pick_selector(self, d, selectors):
+        """依次尝试选择器，返回第一个能命中元素的选择器（缓存到 self._active_sel）"""
+        if getattr(self, "_active_sel", None):
+            try:
+                if d.find_elements(By.CSS_SELECTOR, self._active_sel):
+                    return self._active_sel
+            except Exception:
+                pass
+        for sel in selectors:
+            try:
+                if d.find_elements(By.CSS_SELECTOR, sel):
+                    self._active_sel = sel
+                    return sel
+            except Exception:
+                continue
+        return None
+
+    def _scan_selector(self, d, sel):
+        """选择器通道：读取每个评论元素的文本"""
+        out = []
+        try:
+            for node in d.find_elements(By.CSS_SELECTOR, sel):
+                try:
+                    t = node.text.strip()
+                except Exception:
+                    continue
+                if t:
+                    out.append(t)
+        except Exception:
+            pass
+        return out
+
     def _monitor(self):
-        from selenium.webdriver.common.by import By
         cfg = self.cfg
         url = cfg.get("live_url") or DEFAULT_CONFIG["live_url"]
-        sel = cfg.get("comment_selector") or ".comment-item"
+        sel_chain = list(cfg.get("comment_selectors") or [])
+        if not sel_chain:
+            sel_chain = [cfg.get("comment_selector") or ".comment-item"]
         interval = max(0.2, float(cfg.get("poll_interval", 0.5)))
         cooldown = max(0.0, float(cfg.get("cooldown", 2.0)))
         switch_delay = max(0.0, float(cfg.get("scene_switch_delay", 0.3)))
@@ -213,11 +318,17 @@ class LiveMonitor(QThread):
         self.L(f"打开直播后台：{url}")
         self.status.emit("等待登录…", C_YELLOW)
         d.get(url)
+        self.L("正在注入评论采集器…")
+        inj = self._inject_observer(d)
+        self.L("✓ 评论采集器就绪（DOM 选择器 + 实时捕获双通道）" if inj == "ok" or inj == "already"
+               else f"[yellow]⚠ 采集器注入受限：{inj}")
         waited = 0
         try:
             while self._run and waited < 180 and not self._confirmed.is_set():
-                if d.find_elements(By.CSS_SELECTOR, sel):
+                if self._pick_selector(d, sel_chain):
                     break
+                if not d.execute_script("return window.__liveObserverInstalled===true"):
+                    self._inject_observer(d)
                 time.sleep(0.5)
                 waited += 0.5
         except Exception:
@@ -232,30 +343,34 @@ class LiveMonitor(QThread):
         if self._confirmed.is_set():
             # 用户手动确认已登录：不再依赖评论区元素，直接开始监控
             self.L("✓ 已确认登录，开始监控（间隔 {interval}s）".format(interval=interval))
+            self.L("[yellow]提示：请确认已打开直播后台「互动」面板，或已进入直播间页面；检测到评论会自动记录并触发")
             self.status.emit("监控中", C_GREEN)
         elif waited >= 180:
             self.L("[yellow]⚠ 未检测到评论区，请确认已扫码登录且正在开播")
             self.status.emit("未检测到评论区", C_RED)
         else:
-            self.L(f"✓ 评论区就绪，开始监控（间隔 {interval}s）")
+            self.L(f"✓ 评论区就绪（选择器：{self._active_sel}），开始监控（间隔 {interval}s）")
             self.status.emit("监控中", C_GREEN)
+        default_codes = parse_hotkey(str(cfg.get("default_scene_key") or "").strip())
         seen = set()
+        last_beat = time.time()
         while self._run:
-            try:
-                nodes = d.find_elements(By.CSS_SELECTOR, sel)
-            except Exception:
-                nodes = []
-            for node in nodes:
-                try:
-                    text = node.text.strip()
-                except Exception:
-                    continue
-                if not text:
+            # 双通道采集：选择器 + MutationObserver
+            texts = []
+            sel = self._pick_selector(d, sel_chain)
+            if sel:
+                texts.extend(self._scan_selector(d, sel))
+            js_texts = [x.get("text", "") for x in self._drain_js_comments(d) if isinstance(x, dict)]
+            texts.extend(js_texts)
+            fresh = 0
+            for text in texts:
+                if not self._looks_like_comment(text):
                     continue
                 key = re.sub(r"\s+", "", text)[-40:]
                 if key in seen:
                     continue
                 seen.add(key)
+                fresh += 1
                 if len(seen) > 600:
                     seen = set(list(seen)[-400:])
                 self.log.emit(f"[white]💬 {text[:60]}")
@@ -266,6 +381,12 @@ class LiveMonitor(QThread):
                         if now - last_t >= cooldown:
                             item[2] = now
                             self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
+                            if default_codes and sys.platform == "win32":
+                                try:
+                                    send_hotkey(default_codes)
+                                    time.sleep(switch_delay)
+                                except Exception:
+                                    pass
                             self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
                             if switch_delay > 0:
                                 time.sleep(switch_delay)
@@ -275,6 +396,11 @@ class LiveMonitor(QThread):
                         self.log.emit(f"[cyan]📚 知识库命中「{ks[0]}」→ 弹窗提示")
                         self.knowledge_hit.emit(ks[0], ans)
                         break
+            # 心跳日志：让用户确认软件活着（避免"毫无反应"的错觉）
+            if time.time() - last_beat >= 20:
+                last_beat = time.time()
+                sel_info = f"选择器 {self._active_sel}" if self._active_sel else "等待评论区出现"
+                self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {len(seen)} 条（最近 20 秒 {fresh} 条）")
             try:
                 time.sleep(interval)
             except Exception:
@@ -295,6 +421,7 @@ class LivePage(QWidget):
         super().__init__(parent)
         self.cfg = load_config()
         self.monitor = None
+        self.msg_boxes = []
         self._build_ui()
         self._load_to_ui()
 
@@ -456,9 +583,12 @@ class LivePage(QWidget):
             ans = (self.tbl_kn.item(r, 1).text() if self.tbl_kn.item(r, 1) else "").strip()
             if kw and ans:
                 knowledge.append({"keywords": kw, "answer": ans})
+        custom = [s.strip() for s in re.split(r"[\n,]", self.ed_sel.text()) if s.strip()]
+        chain = custom + [s for s in DEFAULT_CONFIG["comment_selectors"] if s not in custom]
         return {
             "live_url": self.ed_url.text().strip(),
             "comment_selector": self.ed_sel.text().strip() or ".comment-item",
+            "comment_selectors": chain,
             "poll_interval": self.sp_interval.value(),
             "cooldown": self.sp_cooldown.value(),
             "default_scene_key": self.ed_defkey.text().strip() or "num9",
