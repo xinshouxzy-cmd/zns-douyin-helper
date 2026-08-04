@@ -36,21 +36,42 @@ def parse_hotkey(text):
 
 
 def send_hotkey(codes):
-    """Windows API 发送热键；非 Windows 返回 False（仅日志）"""
+    """Windows API 发送热键（SendInput + 扫描码，全局生效，后台也能触发）；
+    非 Windows 返回 False（仅日志）"""
     if sys.platform != "win32":
         return False
     import ctypes
+    from ctypes import wintypes
     u = ctypes.windll.user32
     UP = 0x0002
+    INPUT_KEYBOARD = 1
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("ki", KEYBDINPUT)]
+
+    def send(vk, scan, flags):
+        inp = INPUT()
+        inp.type = INPUT_KEYBOARD
+        inp.ki.wVk = vk
+        inp.ki.wScan = scan
+        inp.ki.dwFlags = flags
+        u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+
     mods = [c for c in codes if c in (0x11, 0x10, 0x12, 0x5B)]
     keys = [c for c in codes if c not in mods]
+    scan = {c: u.MapVirtualKeyW(c, 0) for c in codes}
     for c in mods:
-        u.keybd_event(c, 0, 0, 0)
+        send(c, scan[c], 0)
     for c in keys:
-        u.keybd_event(c, 0, 0, 0)
-        u.keybd_event(c, 0, UP, 0)
+        send(c, scan[c], 0)
+        send(c, scan[c], UP)
     for c in reversed(mods):
-        u.keybd_event(c, 0, UP, 0)
+        send(c, scan[c], UP)
     return True
 
 
@@ -66,6 +87,7 @@ DEFAULT_CONFIG = {
     ],
     "poll_interval": 0.5, "cooldown": 2.0,
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
+    "scene_hold_seconds": 7.0,
     "scenes": [
         {"keywords": "嘉年华", "hotkey": "ctrl+1"},
         {"keywords": "抖音1号,抖音一号", "hotkey": "ctrl+2"},
@@ -152,6 +174,17 @@ class LiveMonitor(QThread):
         driver_path = find_chromedriver()
         bundled = get_bundled_chrome()
         opt = Options()
+        # 持久化登录态：同一台电脑复用同一份 Chrome 配置目录，扫码一次后不再重复登录
+        profile_dir = os.path.join(BASE_DIR, "chrome_profiles", "live")
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+            opt.add_argument(f"--user-data-dir={profile_dir}")
+        except Exception as e:
+            self.L(f"[yellow]⚠ 登录态目录创建失败（{e}），本次为临时登录")
+        opt.add_experimental_option("prefs", {
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+        })
         if bundled and os.path.exists(bundled):
             opt.binary_location = bundled
             self.L("使用内置浏览器")
@@ -259,6 +292,18 @@ class LiveMonitor(QThread):
         except Exception:
             return []
 
+    def _schedule_return_main(self, delay, codes):
+        """场景特效保持 delay 秒后，自动发送主镜头热键（后台线程，不阻塞监控循环）"""
+        def _do():
+            time.sleep(delay)
+            if self._run:
+                try:
+                    send_hotkey(codes)
+                    self.log.emit(f"[cyan]↩ 场景已保持 {delay:g} 秒，已自动返回主镜头")
+                except Exception as e:
+                    self.log.emit(f"[red]自动返回主镜头失败：{e}")
+        threading.Thread(target=_do, daemon=True).start()
+
     def _pick_selector(self, d, selectors):
         """依次尝试选择器，返回第一个能命中元素的选择器（缓存到 self._active_sel）"""
         if getattr(self, "_active_sel", None):
@@ -300,15 +345,16 @@ class LiveMonitor(QThread):
         interval = max(0.2, float(cfg.get("poll_interval", 0.5)))
         cooldown = max(0.0, float(cfg.get("cooldown", 2.0)))
         switch_delay = max(0.0, float(cfg.get("scene_switch_delay", 0.3)))
+        hold_seconds = max(0.0, float(cfg.get("scene_hold_seconds", 7.0)))
         scenes = []
         for s in cfg.get("scenes", []):
-            ks = [k.strip() for k in str(s.get("keywords", "")).split(",") if k.strip()]
+            ks = [k.strip() for k in re.split(r"[,，]", str(s.get("keywords", ""))) if k.strip()]
             hk = str(s.get("hotkey", "")).strip()
             if ks and hk:
                 scenes.append([ks, hk, 0.0])
         knowledge = []
         for k in cfg.get("knowledge", []):
-            ks = [x.strip() for x in str(k.get("keywords", "")).split(",") if x.strip()]
+            ks = [x.strip() for x in re.split(r"[,，]", str(k.get("keywords", ""))) if x.strip()]
             ans = str(k.get("answer", "")).strip()
             if ks and ans:
                 knowledge.append((ks, ans))
@@ -351,8 +397,9 @@ class LiveMonitor(QThread):
         else:
             self.L(f"✓ 评论区就绪（选择器：{self._active_sel}），开始监控（间隔 {interval}s）")
             self.status.emit("监控中", C_GREEN)
-        default_codes = parse_hotkey(str(cfg.get("default_scene_key") or "").strip())
-        seen = set()
+        main_codes = parse_hotkey(str(cfg.get("default_scene_key") or "").strip())
+        seen = {}          # 文本 -> 最近出现时间（30 秒窗口去重，防止双通道重复 & 同条刷屏）
+        DEDUPE_WIN = 30.0
         last_beat = time.time()
         while self._run:
             # 双通道采集：选择器 + MutationObserver
@@ -367,29 +414,26 @@ class LiveMonitor(QThread):
                 if not self._looks_like_comment(text):
                     continue
                 key = re.sub(r"\s+", "", text)[-40:]
-                if key in seen:
-                    continue
-                seen.add(key)
-                fresh += 1
-                if len(seen) > 600:
-                    seen = set(list(seen)[-400:])
-                self.log.emit(f"[white]💬 {text[:60]}")
                 now = time.time()
+                if key in seen and now - seen[key] < DEDUPE_WIN:
+                    continue
+                seen[key] = now
+                if len(seen) > 1000:
+                    seen = {k: v for k, v in seen.items() if now - v < DEDUPE_WIN * 3}
+                fresh += 1
+                self.log.emit(f"[white]💬 {text[:60]}")
                 for item in scenes:
                     ks, hk, last_t = item
                     if any(kw in text for kw in ks):
                         if now - last_t >= cooldown:
                             item[2] = now
                             self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
-                            if default_codes and sys.platform == "win32":
-                                try:
-                                    send_hotkey(default_codes)
-                                    time.sleep(switch_delay)
-                                except Exception:
-                                    pass
                             self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
                             if switch_delay > 0:
                                 time.sleep(switch_delay)
+                            # 特效保持 hold_seconds 秒后自动返回主镜头（直播伴侣全局热键）
+                            if main_codes and sys.platform == "win32" and hold_seconds > 0:
+                                self._schedule_return_main(hold_seconds, main_codes)
                         break
                 for ks, ans in knowledge:
                     if any(kw in text for kw in ks):
@@ -484,11 +528,14 @@ class LivePage(QWidget):
         gl.addWidget(self._mk("默认场景热键", 11, C_SUB), 2, 0)
         self.ed_defkey = QLineEdit()
         gl.addWidget(self.ed_defkey, 2, 1)
-        gl.addWidget(self._mk("场景切换延迟(秒)", 11, C_SUB), 2, 2)
+        gl.addWidget(self._mk("场景保持(秒)", 11, C_SUB), 2, 2)
+        self.sp_hold = QDoubleSpinBox(); self.sp_hold.setRange(0.0, 60); self.sp_hold.setSingleStep(0.5)
+        gl.addWidget(self.sp_hold, 2, 3)
+        gl.addWidget(self._mk("场景切换延迟(秒)", 11, C_SUB), 3, 0)
         self.sp_delay = QDoubleSpinBox(); self.sp_delay.setRange(0.0, 5); self.sp_delay.setSingleStep(0.1)
-        gl.addWidget(self.sp_delay, 2, 3)
-        gl.addWidget(self._mk("热键格式：ctrl+1 / num9 / f5（+ 组合修饰键；num 为小键盘）", 10, C_SUB), 3, 0, 1, 4)
-        for w in (self.ed_url, self.ed_sel, self.ed_defkey, self.sp_interval, self.sp_cooldown, self.sp_delay):
+        gl.addWidget(self.sp_delay, 3, 1)
+        gl.addWidget(self._mk("热键格式：ctrl+7（横排数字）/ num9（小键盘）；关键词用逗号分隔，半角全角均可", 10, C_SUB), 4, 0, 1, 4)
+        for w in (self.ed_url, self.ed_sel, self.ed_defkey, self.sp_interval, self.sp_cooldown, self.sp_delay, self.sp_hold):
             w.setStyleSheet(STYLE_EDIT)
         outer.addWidget(card)
         # ── 规则表格区 ──
@@ -565,6 +612,7 @@ class LivePage(QWidget):
         self.sp_cooldown.setValue(float(self.cfg.get("cooldown", 2.0)))
         self.ed_defkey.setText(self.cfg.get("default_scene_key", ""))
         self.sp_delay.setValue(float(self.cfg.get("scene_switch_delay", 0.3)))
+        self.sp_hold.setValue(float(self.cfg.get("scene_hold_seconds", 7.0)))
         for s in self.cfg.get("scenes", []):
             self._add_row(self.tbl_scene, 2, s.get("keywords", ""), s.get("hotkey", ""))
         for k in self.cfg.get("knowledge", []):
@@ -593,6 +641,7 @@ class LivePage(QWidget):
             "cooldown": self.sp_cooldown.value(),
             "default_scene_key": self.ed_defkey.text().strip() or "num9",
             "scene_switch_delay": self.sp_delay.value(),
+            "scene_hold_seconds": self.sp_hold.value(),
             "scenes": scenes,
             "knowledge": knowledge,
         }
