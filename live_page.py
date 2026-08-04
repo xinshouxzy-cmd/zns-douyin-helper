@@ -155,6 +155,7 @@ DEFAULT_CONFIG = {
     "poll_interval": 0.5, "cooldown": 2.0,
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
     "scene_hold_seconds": 7.0,
+    "dedupe_window": 600,
     "scenes": [
         {"keywords": "嘉年华", "hotkey": "ctrl+1"},
         {"keywords": "抖音1号,抖音一号", "hotkey": "ctrl+2"},
@@ -235,6 +236,10 @@ class LiveMonitor(QThread):
         self._run = True
         self._confirmed = threading.Event()
         self._active_sel = None   # 命中并缓存的选择器（heartbeat 日志使用）
+        self._return_seq = 0      # 返回主镜头计时序号：新触发使旧计时作废
+        self._dedupe_win = 600.0  # 兜底通道的"昵称+内容"指纹去重窗口
+        self._seen = {}           # 指纹 -> 最近处理时间
+        self._prev_order = []     # 上一轮 DOM 顺序指纹（位置增量识别锚点）
 
     def stop(self):
         self._run = False
@@ -416,16 +421,36 @@ class LiveMonitor(QThread):
             return []
 
     def _schedule_return_main(self, delay, codes):
-        """场景特效保持 delay 秒后，自动发送主镜头热键（后台线程，不阻塞监控循环）"""
+        """场景特效保持 delay 秒后，自动发送主镜头热键。
+        以「最近一次触发」为准：新触发会把上一轮的返回计时作废（序号机制），
+        连续多人发关键词时，返回主镜头发生在最后一个人触发后的 delay 秒。"""
+        self._return_seq += 1
+        my_seq = self._return_seq
+
         def _do():
             time.sleep(delay)
-            if self._run:
+            if self._run and self._return_seq == my_seq:
                 try:
                     send_hotkey(codes)
                     self.log.emit(f"[cyan]↩ 场景已保持 {delay:g} 秒，已自动返回主镜头")
                 except Exception as e:
                     self.log.emit(f"[red]自动返回主镜头失败：{e}")
         threading.Thread(target=_do, daemon=True).start()
+
+    @staticmethod
+    def _split_comment(text):
+        """尽力从捕获文本拆出 (昵称, 内容)：
+        支持 '昵称: 内容' / '昵称：内容' / '昵称\\n内容'，拆不出则昵称留空。"""
+        raw = text or ""
+        for sep in ("：", ":"):
+            if sep in raw:
+                nick, content = raw.split(sep, 1)
+                return nick.strip()[:20], content.strip()
+        if "\n" in raw:
+            lines = [x.strip() for x in raw.split("\n") if x.strip()]
+            if len(lines) >= 2 and len(lines[0]) <= 20:
+                return lines[0][:20], " ".join(lines[1:]).strip()
+        return "", re.sub(r"\s+", " ", raw).strip()
 
     def _pick_selector(self, d, selectors):
         """依次尝试选择器，返回第一个能命中元素的选择器（缓存到 self._active_sel）"""
@@ -458,6 +483,38 @@ class LiveMonitor(QThread):
         except Exception:
             pass
         return out
+
+    def _scan_ordered(self, d, sel):
+        """按 DOM 顺序采集评论 → [(指纹, 原始文本)]，指纹 = 昵称|内容（供位置增量识别）"""
+        out = []
+        try:
+            for node in d.find_elements(By.CSS_SELECTOR, sel):
+                try:
+                    t = node.text.strip()
+                except Exception:
+                    continue
+                if not t:
+                    continue
+                nick, content = self._split_comment(t)
+                fp = f"{nick}|{re.sub(r'\s+', '', content)[-40:]}"
+                out.append((fp, t))
+        except Exception:
+            pass
+        return out
+
+    def _diff_new(self, cur_fps):
+        """位置增量识别：新评论 = 出现在上一轮列表「锚点（最后一个评论）」之后的条目。
+        这样反复扫描到旧评论不会重复触发；同一人新发的评论（出现在新位置）照样触发。
+        列表被重排/收缩时保守处理：等下一轮稳定，由兜底通道按指纹窗口补充。"""
+        prev = self._prev_order or []
+        self._prev_order = cur_fps[-80:]
+        if not prev:
+            return list(cur_fps)
+        if len(cur_fps) < len(prev) or prev[-1] not in cur_fps:
+            # 列表收缩/重排：本轮不确定，交给兜底通道（_seen 指纹窗口）
+            return []
+        anchor = len(cur_fps) - 1 - cur_fps[::-1].index(prev[-1])
+        return cur_fps[anchor + 1:]
 
     def _monitor(self):
         cfg = self.cfg
@@ -534,18 +591,26 @@ class LiveMonitor(QThread):
             self.L(f"✓ 评论区就绪（选择器：{self._active_sel}），开始监控（间隔 {interval}s）")
             self.status.emit("监控中", C_GREEN)
         main_codes = parse_hotkey(str(cfg.get("default_scene_key") or "").strip())
-        seen = {}          # 文本 -> 最近出现时间（30 秒窗口去重，防止双通道重复 & 同条刷屏）
-        DEDUPE_WIN = 30.0
+        self._dedupe_win = max(30.0, float(cfg.get("dedupe_window", 600)))
+        self._seen = {}       # "昵称|内容"指纹 -> 最近处理时间（兜底通道去重）
+        self._prev_order = [] # 上一轮按 DOM 顺序的评论指纹（位置增量识别锚点）
         last_beat = time.time()
         round_no = 0
         while self._run:
             try:
                 round_no += 1
-                # 采集：选择器 + MutationObserver + 全量快照兜底
-                texts = []
+                now = time.time()
+                # ── 主通道：有序扫描 + 位置增量识别（新评论 = 出现在上一轮锚点之后）──
+                new_items = []   # [(指纹, 文本)]
                 sel = self._pick_selector(d, sel_chain)
                 if sel:
-                    texts.extend(self._scan_selector(d, sel))
+                    ordered = self._scan_ordered(d, sel)
+                    fps = [fp for fp, _ in ordered]
+                    new_fps = self._diff_new(fps)
+                    for fp, text in ordered:
+                        if fp in new_fps:
+                            new_items.append((fp, text))
+                # ── 兜底通道：观察器 + 全量快照（无位置信息，用"昵称+内容"指纹+窗口去重）──
                 try:
                     ok = d.execute_script(
                         "return window.__liveObserverInstalled===true && "
@@ -554,26 +619,33 @@ class LiveMonitor(QThread):
                         self._inject_observer(d)
                 except Exception:
                     pass
-                js_texts = [x.get("text", "") for x in self._drain_js_comments(d) if isinstance(x, dict)]
-                texts.extend(js_texts)
+                fallback = []
+                fallback.extend(self._drain_js_comments(d))
                 if round_no % 4 == 0:  # 每约 2 秒全量扫描一次，观察器漏抓也能兜住
-                    texts.extend(x.get("text", "") for x in self._sniff_all(d) if isinstance(x, dict))
+                    fallback.extend(self._sniff_all(d))
+                for item in fallback:
+                    t = item.get("text", "") if isinstance(item, dict) else str(item)
+                    if not self._looks_like_comment(t):
+                        continue
+                    nick, content = self._split_comment(t)
+                    fp = f"{nick}|{re.sub(r'\s+', '', content)[-40:]}"
+                    win = self._dedupe_win if nick else min(self._dedupe_win, 60.0)
+                    if fp in self._seen and now - self._seen[fp] < win:
+                        continue
+                    new_items.append((fp, t))
                 fresh = 0
-                for text in texts:
-                    if not self._looks_like_comment(text):
-                        continue
-                    key = re.sub(r"\s+", "", text)[-40:]
-                    now = time.time()
-                    if key in seen and now - seen[key] < DEDUPE_WIN:
-                        continue
-                    seen[key] = now
-                    if len(seen) > 1000:
-                        seen = {k: v for k, v in seen.items() if now - v < DEDUPE_WIN * 3}
+                for fp, text in new_items:
+                    self._seen[fp] = now
+                    if len(self._seen) > 2000:
+                        self._seen = {k: v for k, v in self._seen.items()
+                                      if now - v < max(self._dedupe_win, 3600)}
+                    nick, content = self._split_comment(text)
+                    match_text = content or text
                     fresh += 1
-                    self.log.emit(f"[white]💬 {text[:60]}")
+                    self.log.emit(f"[white]💬 {nick + '：' if nick else ''}{content[:60]}")
                     for item in scenes:
                         ks, hk, last_t = item
-                        if any(kw in text for kw in ks):
+                        if any(kw in match_text for kw in ks):
                             if now - last_t >= cooldown:
                                 item[2] = now
                                 self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
@@ -583,9 +655,11 @@ class LiveMonitor(QThread):
                                 # 特效保持 hold_seconds 秒后自动返回主镜头（直播伴侣全局热键）
                                 if main_codes and sys.platform == "win32" and hold_seconds > 0:
                                     self._schedule_return_main(hold_seconds, main_codes)
+                                    self.log.emit(
+                                        f"[cyan]⏱ 场景保持计时重置：{hold_seconds:g} 秒后自动返回主镜头（以最近一次触发为准）")
                             break
                     for ks, ans in knowledge:
-                        if any(kw in text for kw in ks):
+                        if any(kw in match_text for kw in ks):
                             self.log.emit(f"[cyan]📚 知识库命中「{ks[0]}」→ 弹窗提示")
                             self.knowledge_hit.emit(ks[0], ans)
                             break
@@ -593,7 +667,7 @@ class LiveMonitor(QThread):
                 if time.time() - last_beat >= 20:
                     last_beat = time.time()
                     sel_info = f"选择器 {self._active_sel}" if self._active_sel else "等待评论区出现"
-                    self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {len(seen)} 条（最近 20 秒 {fresh} 条）")
+                    self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {len(self._seen)} 条（最近 20 秒 {fresh} 条）")
             except Exception as e:
                 # 单轮异常不致命：记录后继续监控，避免一次抖动拖死整个监控
                 self.log.emit(f"[red]本轮扫描异常（已自动继续）：{e}")
