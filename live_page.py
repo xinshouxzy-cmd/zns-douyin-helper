@@ -48,8 +48,8 @@ def parse_hotkey(text):
 
 
 def send_hotkey(codes, hold=0.06, gap=0.03):
-    """Windows API 发送热键（SendInput + 扫描码，全局生效，后台也能触发）；
-    按下/抬起之间保留真实按键的时序（hold=按住时长），避免目标软件把瞬时事件当噪音丢弃。
+    """Windows API 发送热键（SendInput 优先，失败自动回退 keybd_event）；
+    按下/抬起之间保留真实按键时序（hold=按住时长），避免目标软件把瞬时事件当噪音丢弃。
     非 Windows 返回 False（仅日志）"""
     if sys.platform != "win32":
         return False
@@ -62,32 +62,66 @@ def send_hotkey(codes, hold=0.06, gap=0.03):
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
                     ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
-                    ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+                    ("dwExtraInfo", ctypes.c_size_t)]   # ULONG_PTR
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                    ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                    ("wParamH", wintypes.WORD)]
+
+    class _INPUTUNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
 
     class INPUT(ctypes.Structure):
-        _fields_ = [("type", wintypes.DWORD), ("ki", KEYBDINPUT)]
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
 
-    def send(vk, scan, flags):
+    def make_input(vk, scan, flags):
         inp = INPUT()
         inp.type = INPUT_KEYBOARD
         inp.ki.wVk = vk
         inp.ki.wScan = scan
         inp.ki.dwFlags = flags
-        u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        return inp
 
     mods = [c for c in codes if c in (0x11, 0x10, 0x12, 0x5B)]
     keys = [c for c in codes if c not in mods]
     scan = {c: u.MapVirtualKeyW(c, 0) for c in codes}
+    seq = []
     for c in mods:
-        send(c, scan[c], 0)
+        seq.append((c, scan[c], 0))
+    for c in keys:
+        seq.append((c, scan[c], 0))
+        seq.append((c, scan[c], UP))
+    for c in reversed(mods):
+        seq.append((c, scan[c], UP))
+
+    # 方式1：SendInput（结构体带 union，大小必须与系统一致，否则 API 直接失败）
+    ok = True
+    for vk, sc, fl in seq:
+        inp = make_input(vk, sc, fl)
+        if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+            ok = False
+            break
+        time.sleep(hold if fl == UP else gap)
+    if ok:
+        return True
+
+    # 方式2：keybd_event 回退（部分软件只认这种注入方式）
+    for c in mods:
+        u.keybd_event(c, 0, 0, 0)
         time.sleep(gap)
     for c in keys:
-        send(c, scan[c], 0)
+        u.keybd_event(c, 0, 0, 0)
         time.sleep(hold)
-        send(c, scan[c], UP)
+        u.keybd_event(c, 0, UP, 0)
         time.sleep(gap)
     for c in reversed(mods):
-        send(c, scan[c], UP)
+        u.keybd_event(c, 0, UP, 0)
         time.sleep(gap)
     return True
 
