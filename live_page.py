@@ -15,7 +15,23 @@ from PyQt5.QtWidgets import (
 from selenium.webdriver.common.by import By
 from worker import BASE_DIR, find_chromedriver, get_bundled_chrome
 
-CONFIG_PATH = os.path.join(BASE_DIR, "live_config.json")
+
+def _resolve_config_path():
+    """规则配置文件 live_config.json 的位置：
+    打包版优先 <软件目录(exe旁)>，其次 _internal；源码版在代码目录。
+    这样用户能直接看到/复制规则文件。"""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        cands = [os.path.join(exe_dir, "live_config.json"),
+                 os.path.join(BASE_DIR, "live_config.json")]
+        for cand in cands:
+            if os.path.exists(cand):
+                return cand
+        return cands[0]
+    return os.path.join(BASE_DIR, "live_config.json")
+
+
+CONFIG_PATH = _resolve_config_path()
 
 # ── Windows 虚拟键码表 ──
 VK = {"ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B,
@@ -872,12 +888,13 @@ class LivePage(QWidget):
         self.cfg = cfg
         now = time.strftime("%H:%M:%S")
         self.lb_saved.setText(f"✅ 已保存 {now}")
-        self._append_log("[green]✅ 设置已保存（live_config.json），下次打开自动加载")
+        self._append_log(f"[green]✅ 设置已保存：{CONFIG_PATH}（下次打开自动加载）")
 
     # ── 控制 ──
     def _start(self):
         if self.monitor and self.monitor.isRunning():
             return
+        self._append_log(f"[cyan]配置文件：{CONFIG_PATH}（复制该文件即可迁移场景规则）")
         cfg = self._collect()
         save_config(cfg)
         self.cfg = cfg
