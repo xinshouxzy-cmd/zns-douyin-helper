@@ -306,6 +306,7 @@ class LiveMonitor(QThread):
         "点赞次数", "实时在线人数", "实时进房人数", "新增渠道营收占比",
         "直播中", "未开播", "已开播", "互动", "商品", "数据", "更多",
     }
+    NOISE_PREFIX = ("预览流看播", "在线人数音浪收入送礼人数评论人数点赞次数")
 
     @staticmethod
     def _looks_like_comment(t):
@@ -319,15 +320,22 @@ class LiveMonitor(QThread):
             return False
         if t in LiveMonitor.UI_NOISE:
             return False
+        if t.startswith(LiveMonitor.NOISE_PREFIX):
+            return False
         return True
 
     def _inject_observer(self, d):
         """注入 MutationObserver：页面新增的短文本实时收集到 window.__liveCommentBuf
-        不依赖任何 class 名，评论 DOM 怎么变都能抓到。"""
+        不依赖任何 class 名，评论 DOM 怎么变都能抓到。
+        注意：观察目标必须是 document.documentElement —— 登录跳转等场景会整页替换
+        document.body，若观察 body 就会全部失效（旧评论能抓、新评论全丢就是这个原因）。"""
         js = r"""
         (function(){
-          if (window.__liveObserverInstalled) return 'already';
+          if (window.__liveObserverInstalled) {
+            try { window.__liveObserver.disconnect(); } catch(e){}
+          }
           window.__liveCommentBuf = [];
+          window.__liveObserverBody = document.body;
           var buf = window.__liveCommentBuf;
           function pushText(t){
             t = (t||'').replace(/\s+/g,' ').trim();
@@ -348,7 +356,8 @@ class LiveMonitor(QThread):
               for (var j=0;j<r.addedNodes.length;j++) sniff(r.addedNodes[j]);
             }
           });
-          mo.observe(document.body, {childList:true, subtree:true});
+          mo.observe(document.documentElement, {childList:true, subtree:true});
+          window.__liveObserver = mo;
           window.__liveObserverInstalled = true;
           return 'ok';
         })()
@@ -357,6 +366,26 @@ class LiveMonitor(QThread):
             return d.execute_script(js)
         except Exception as e:
             return "err:" + str(e)
+
+    def _sniff_all(self, d):
+        """兜底通道：全量扫描页面上的叶子级短文本（新评论即使观察器失效也能抓到）"""
+        js = r"""
+        (function(){
+          var out = [];
+          var els = document.querySelectorAll('div,span,p,section,li');
+          for (var i=0;i<els.length;i++){
+            var el = els[i];
+            if (el.children && el.children.length > 0) continue;
+            var t = (el.textContent||'').replace(/\s+/g,' ').trim();
+            if (t && t.length >= 1 && t.length <= 120) out.push({text:t, t:Date.now()});
+          }
+          return out;
+        })()
+        """
+        try:
+            return d.execute_script(js)
+        except Exception:
+            return []
 
     def _drain_js_comments(self, d):
         """取走 JS 缓冲里的新文本（取完清空）"""
@@ -488,19 +517,26 @@ class LiveMonitor(QThread):
         seen = {}          # 文本 -> 最近出现时间（30 秒窗口去重，防止双通道重复 & 同条刷屏）
         DEDUPE_WIN = 30.0
         last_beat = time.time()
+        round_no = 0
         while self._run:
-            # 双通道采集：选择器 + MutationObserver
+            round_no += 1
+            # 采集：选择器 + MutationObserver + 全量快照兜底
             texts = []
             sel = self._pick_selector(d, sel_chain)
             if sel:
                 texts.extend(self._scan_selector(d, sel))
             try:
-                if not d.execute_script("return window.__liveObserverInstalled===true"):
+                ok = d.execute_script(
+                    "return window.__liveObserverInstalled===true && "
+                    "window.__liveObserverBody===document.body")
+                if not ok:
                     self._inject_observer(d)
             except Exception:
                 pass
             js_texts = [x.get("text", "") for x in self._drain_js_comments(d) if isinstance(x, dict)]
             texts.extend(js_texts)
+            if round_no % 4 == 0:  # 每约 2 秒全量扫描一次，观察器漏抓也能兜住
+                texts.extend(x.get("text", "") for x in self._sniff_all(d) if isinstance(x, dict))
             fresh = 0
             for text in texts:
                 if not self._looks_like_comment(text):
@@ -605,31 +641,28 @@ class LivePage(QWidget):
         gl = QGridLayout(card)
         gl.setContentsMargins(14, 12, 14, 12)
         gl.setSpacing(8)
-        gl.addWidget(self._mk("直播后台地址", 11, C_SUB), 0, 0)
+        # 后台地址/评论选择器保留在配置里（自动适配），不占用界面
         self.ed_url = QLineEdit()
-        gl.addWidget(self.ed_url, 0, 1)
-        gl.addWidget(self._mk("评论选择器", 11, C_SUB), 0, 2)
         self.ed_sel = QLineEdit()
-        gl.addWidget(self.ed_sel, 0, 3)
-        gl.addWidget(self._mk("检测间隔(秒)", 11, C_SUB), 1, 0)
+        gl.addWidget(self._mk("检测间隔(秒)", 11, C_SUB), 0, 0)
         self.sp_interval = QDoubleSpinBox(); self.sp_interval.setRange(0.2, 10); self.sp_interval.setSingleStep(0.1)
-        gl.addWidget(self.sp_interval, 1, 1)
-        gl.addWidget(self._mk("触发冷却(秒)", 11, C_SUB), 1, 2)
+        gl.addWidget(self.sp_interval, 0, 1)
+        gl.addWidget(self._mk("触发冷却(秒)", 11, C_SUB), 0, 2)
         self.sp_cooldown = QDoubleSpinBox(); self.sp_cooldown.setRange(0.0, 60); self.sp_cooldown.setSingleStep(0.5)
-        gl.addWidget(self.sp_cooldown, 1, 3)
-        gl.addWidget(self._mk("主镜头热键(回切)", 11, C_SUB), 2, 0)
+        gl.addWidget(self.sp_cooldown, 0, 3)
+        gl.addWidget(self._mk("主镜头热键(回切)", 11, C_SUB), 1, 0)
         self.cmb_main_key = QComboBox()
         for label, val in NUM_KEY_OPTIONS:
             self.cmb_main_key.addItem(label, val)
         self.cmb_main_key.setStyleSheet(STYLE_COMBO)
-        gl.addWidget(self.cmb_main_key, 2, 1)
-        gl.addWidget(self._mk("场景保持(秒)", 11, C_SUB), 2, 2)
+        gl.addWidget(self.cmb_main_key, 1, 1)
+        gl.addWidget(self._mk("场景保持(秒)", 11, C_SUB), 1, 2)
         self.sp_hold = QDoubleSpinBox(); self.sp_hold.setRange(0.0, 60); self.sp_hold.setSingleStep(0.5)
-        gl.addWidget(self.sp_hold, 2, 3)
-        gl.addWidget(self._mk("场景切换延迟(秒)", 11, C_SUB), 3, 0)
+        gl.addWidget(self.sp_hold, 1, 3)
+        gl.addWidget(self._mk("场景切换延迟(秒)", 11, C_SUB), 2, 0)
         self.sp_delay = QDoubleSpinBox(); self.sp_delay.setRange(0.0, 5); self.sp_delay.setSingleStep(0.1)
-        gl.addWidget(self.sp_delay, 3, 1)
-        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 4, 0, 1, 4)
+        gl.addWidget(self.sp_delay, 2, 1)
+        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 3, 0, 1, 4)
         for w in (self.ed_url, self.ed_sel, self.sp_interval, self.sp_cooldown, self.sp_delay, self.sp_hold):
             w.setStyleSheet(STYLE_EDIT)
         outer.addWidget(card)
@@ -664,7 +697,7 @@ class LivePage(QWidget):
         outer.addLayout(mid, 1)
         # ── 控制 + 日志 ──
         ctrl = QHBoxLayout()
-        self.btn_start = QPushButton("▶ 开始监控")
+        self.btn_start = QPushButton("▶ 启动")
         self.btn_start.setStyleSheet(STYLE_BTN_ACC)
         self.btn_start.clicked.connect(self._start)
         self.btn_confirm = QPushButton("✅ 我已登录，开始监控")
