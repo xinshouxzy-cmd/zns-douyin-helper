@@ -218,6 +218,7 @@ class LiveMonitor(QThread):
         self.cfg = cfg
         self._run = True
         self._confirmed = threading.Event()
+        self._active_sel = None   # 命中并缓存的选择器（heartbeat 日志使用）
 
     def stop(self):
         self._run = False
@@ -299,15 +300,24 @@ class LiveMonitor(QThread):
             self.done.emit(f"监控异常：{e}", False)
 
     # ── 评论采集：选择器链 + MutationObserver 双通道 ──
+    UI_NOISE = {
+        "我知道了", "评论发送", "评论", "发送", "暂无礼物记录", "暂无权限查看",
+        "预览流看播", "看播", "在线人数", "音浪收入", "送礼人数", "评论人数",
+        "点赞次数", "实时在线人数", "实时进房人数", "新增渠道营收占比",
+        "直播中", "未开播", "已开播", "互动", "商品", "数据", "更多",
+    }
+
     @staticmethod
     def _looks_like_comment(t):
-        """粗过滤：去掉纯数字/纯符号/超长文本，剩下的按评论处理"""
+        """粗过滤：去掉纯数字/纯符号/超长文本/后台界面文案，剩下的按评论处理"""
         t = (t or "").strip()
         if not t or len(t) < 1 or len(t) > 120:
             return False
         if t.isdigit():
             return False
         if re.fullmatch(r"[\W_\s]+", t):
+            return False
+        if t in LiveMonitor.UI_NOISE:
             return False
         return True
 
@@ -430,8 +440,21 @@ class LiveMonitor(QThread):
         d.get(url)
         self.L("正在注入评论采集器…")
         inj = self._inject_observer(d)
-        self.L("✓ 评论采集器就绪（DOM 选择器 + 实时捕获双通道）" if inj == "ok" or inj == "already"
-               else f"[yellow]⚠ 采集器注入受限：{inj}")
+        observer_ok = inj in ("ok", "already")
+        if not observer_ok:
+            try:
+                observer_ok = bool(d.execute_script("return window.__liveObserverInstalled===true"))
+            except Exception:
+                observer_ok = False
+        if not observer_ok:
+            time.sleep(1.0)
+            inj = self._inject_observer(d)
+            try:
+                observer_ok = bool(d.execute_script("return window.__liveObserverInstalled===true"))
+            except Exception:
+                observer_ok = False
+        self.L("✓ 评论采集器就绪（选择器 + 实时捕获双通道）" if observer_ok
+               else "[yellow]⚠ 实时捕获未就绪，仅用选择器通道（评论仍可识别）")
         waited = 0
         try:
             while self._run and waited < 180 and not self._confirmed.is_set():
@@ -471,6 +494,11 @@ class LiveMonitor(QThread):
             sel = self._pick_selector(d, sel_chain)
             if sel:
                 texts.extend(self._scan_selector(d, sel))
+            try:
+                if not d.execute_script("return window.__liveObserverInstalled===true"):
+                    self._inject_observer(d)
+            except Exception:
+                pass
             js_texts = [x.get("text", "") for x in self._drain_js_comments(d) if isinstance(x, dict)]
             texts.extend(js_texts)
             fresh = 0

@@ -1,4 +1,4 @@
-VERSION = "v2.0.76"
+VERSION = "v2.0.77"
 # 改动:
 #       (1) 紧急修复 v2.0.68 打开即闪退：启动页粒子连线绘制时向 QPainter.drawLine 传入 float 坐标，
 #           在 Qt 事件循环内抛出 TypeError 导致进程 abort；已改为 int 坐标，多页面渲染测试通过
@@ -59,3 +59,10 @@ VERSION = "v2.0.76"
 #           本次修正结构体布局（KEYBDINPUT=24 / UNION=32 / INPUT=40，与系统一致），
 #           发送时校验 SendInput 返回值，失败自动回退 keybd_event 双通道发送；
 #           仍保留真实按键时序（按下保持 60ms）。
+#      (13) v2.0.77 修复「监控跑 20 秒后异常退出」+ 日志噪音：
+#           ① 心跳日志访问 self._active_sel 时该属性可能尚未初始化（手动确认登录路径
+#              会跳过选择器探测）→ AttributeError 导致监控线程崩溃；现于 __init__ 预置 None。
+#           ② MutationObserver 会把直播后台界面文案（在线人数/音浪收入/我知道了等）
+#              也当评论抓到日志里刷屏；新增 UI_NOISE 黑名单过滤，只显示真正的评论。
+#           ③ 采集器注入增加"验证+重试"：返回 None 时复查 window.__liveObserverInstalled，
+#              仍失败则降级为仅选择器通道并提示；监控循环内每轮自动补注丢失的观察器。
