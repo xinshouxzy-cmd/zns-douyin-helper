@@ -107,6 +107,7 @@ class AccountWorker(QThread):
         self._has_manual_calib = False
         self._pm_n = 0
         self._cmt_n = 0
+        self._cmt_real_mouse_used = False   # 静默模式下每轮真实鼠标回退限一次
         self._login_ok = Event()
         self._calib_requested = Event()  # 登录等待期间的手动校准请求
         self._last_reply = {}
@@ -343,7 +344,14 @@ class AccountWorker(QThread):
         if not found: return False
         try:
             el = self._d.find_element(By.CSS_SELECTOR, '[data-sc="1"]')
-            ActionChains(self._d).move_to_element(el).click().perform()
+            # 优先静默点击（不抢窗口）；失败才回退真实鼠标
+            try:
+                el.click()
+            except Exception:
+                r = el.rect
+                ok, _ = self._cmt_click_js(r["x"] + r["width"] / 2, r["y"] + r["height"] / 2)
+                if not ok:
+                    ActionChains(self._d).move_to_element(el).click().perform()
             time.sleep(4)
             return True
         except:
@@ -472,37 +480,70 @@ class AccountWorker(QThread):
     def _cmt_click_js(self, x, y):
         """JS 静默点击：elementFromPoint + dispatchEvent（与私信回复同款方案）。
         不移动真实鼠标、不激活窗口，从根本上不抢焦点。
-        补全 hover 序列（mouseover/mouseenter/mousemove）以触发抖音浮窗。"""
+        返回 (是否成功, 失败原因)，失败时带微调重试与诊断信息。"""
         js = """
-            var el = document.elementFromPoint(arguments[0], arguments[1]);
-            if (!el) return 0;
-            var r = el.getBoundingClientRect();
-            if (!r || (r.width === 0 && r.height === 0)) return 0;
-            var types = ['pointerover','mouseover','mouseenter','mousemove',
-                         'pointerdown','mousedown','pointerup','mouseup','click'];
-            for (var i = 0; i < types.length; i++) {
+            (function(){
+              var x = arguments[0], y = arguments[1];
+              if (document.visibilityState === 'hidden')
+                return {ok:0, why:'页面不可见(hidden)'};
+              var el = document.elementFromPoint(x, y);
+              if (!el) {
+                for (var dx=-3; dx<=3; dx++) for (var dy=-3; dy<=3; dy++) {
+                  var e2 = document.elementFromPoint(x+dx, y+dy);
+                  if (e2) { var r2 = e2.getBoundingClientRect();
+                    if (r2.width>0 || r2.height>0) { el = e2; break; } }
+                }
+              }
+              if (!el) return {ok:0, why:'坐标('+x+','+y+')处无可见元素'};
+              var r = el.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0)
+                return {ok:0, why:'元素不可见(0尺寸)'};
+              var types = ['pointerover','mouseover','mouseenter','mousemove',
+                           'pointerdown','mousedown','pointerup','mouseup','click'];
+              for (var i = 0; i < types.length; i++) {
                 var ev;
                 try { ev = new PointerEvent(types[i], {bubbles:true, cancelable:true, view:window, pointerId:1}); }
                 catch(e) { ev = new MouseEvent(types[i], {bubbles:true, cancelable:true, view:window}); }
                 el.dispatchEvent(ev);
-            }
-            return 1;
+              }
+              return {ok:1, why:''};
+            })()
         """
         try:
-            return self._d.execute_script(js, int(x), int(y))
+            r = self._d.execute_script(js, int(x), int(y))
+            if isinstance(r, dict):
+                return bool(r.get("ok")), r.get("why", "")
+            return bool(r), ""
         except Exception:
-            return None
+            return False, ""
 
     def _cmt_click_at(self, x, y, retries=3):
         """点击（视口绝对坐标）。
-        静默模式（默认开，不抢窗口）：先 JS 静默点击，失败才回退真实鼠标（会抢一次窗口）。
+        静默模式（默认开，不抢窗口）：
+          ① 页面不可见（被遮挡/最小化）→ 直接跳过，绝不回退真实鼠标（这是快贷中心抢窗口的根因）；
+          ② JS 静默点击失败 → 记录原因重试；
+          ③ 仍失败 → 每轮最多回退一次真实鼠标（日志醒目提示）。
         兼容模式（关）：始终用 ActionChains 真实鼠标（v2.0.37 方案，最可靠但会抢焦点）。"""
         if self.silent_mode:
+            try:
+                vis = self._d.execute_script("return document.visibilityState")
+            except Exception:
+                vis = "visible"
+            if vis == "hidden":
+                self.L("🌙 窗口不可见（被遮挡/最小化），跳过本次点击以避免抢窗口", "yellow")
+                return False
             for i in range(retries):
-                if self._cmt_click_js(x, y):
+                ok, why = self._cmt_click_js(x, y)
+                if ok:
                     return True
+                if why:
+                    self.L(f"  JS点击失败：{why}", "yellow")
                 time.sleep(0.5)
-            self.L("⚠ JS 静默点击无效，回退真实鼠标（本次会抢一次窗口）", "yellow")
+            if self._cmt_real_mouse_used:
+                self.L("⚠ JS 点击无效，但本轮已回退过真实鼠标，不再重复（避免连续抢窗口）", "yellow")
+                return False
+            self._cmt_real_mouse_used = True
+            self.L("⚠ JS 静默点击无效，限一次真实鼠标回退（本次会抢一次窗口）", "yellow")
         try:
             body = self._d.find_element(By.TAG_NAME, "body")
             cx, cy = self._d.execute_script("""
@@ -722,6 +763,7 @@ class AccountWorker(QThread):
     def _cmt_cycle(self):
         """一轮评论检测+回复（v2.0.37 ActionChains 真实鼠标 + 手动校准坐标）"""
         try:
+            self._cmt_real_mouse_used = False
             self._switch_tab(TAB_HOME)
             if "www.douyin.com" not in (self._d.current_url or ""):
                 self._d.get(DY_HOME)
@@ -817,7 +859,10 @@ class AccountWorker(QThread):
                     if el:
                         try:
                             r = el.rect
-                            self._cmt_click_at(r['x']+r['width']/2, r['y']+r['height']/2)
+                            try:
+                                el.click()   # CDP 注入点击，不抢窗口
+                            except Exception:
+                                self._cmt_click_at(r['x']+r['width']/2, r['y']+r['height']/2)
                         except:
                             el.click()
                     else:
@@ -861,7 +906,10 @@ class AccountWorker(QThread):
                     for el in elements:
                         r = el.rect
                         if r['width'] > 0 and r['height'] > 0 and r['width'] < 200:
-                            self._cmt_click_at(r['x']+r['width']/2, r['y']+r['height']/2)
+                            try:
+                                el.click()   # CDP 注入点击，不抢窗口
+                            except Exception:
+                                self._cmt_click_at(r['x']+r['width']/2, r['y']+r['height']/2)
                             cmt_clicked = True
                             break
                 except: pass
