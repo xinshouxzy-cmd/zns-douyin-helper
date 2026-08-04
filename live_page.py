@@ -10,7 +10,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QDoubleSpinBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QTextEdit,
+    QHeaderView, QMessageBox, QTextEdit, QComboBox,
 )
 from selenium.webdriver.common.by import By
 from worker import BASE_DIR, find_chromedriver, get_bundled_chrome
@@ -28,6 +28,18 @@ for _i in range(12):
 for _c in "abcdefghijklmnopqrstuvwxyz":
     VK[_c] = ord(_c.upper())
 
+# ── 热键下拉选项（避免手输出错）──
+MOD_OPTIONS = [
+    ("无", ""), ("Ctrl", "ctrl"), ("Alt", "alt"), ("Shift", "shift"),
+    ("Ctrl+Alt", "ctrl+alt"), ("Ctrl+Shift", "ctrl+shift"),
+    ("Alt+Shift", "alt+shift"), ("Ctrl+Alt+Shift", "ctrl+alt+shift"),
+]
+KEY_OPTIONS = ([("数字" + str(i), str(i)) for i in range(10)] +
+               [(c, c.lower()) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"] +
+               [("F" + str(i), "f" + str(i)) for i in range(1, 13)] +
+               [("小键盘" + str(i), "num" + str(i)) for i in range(10)])
+NUM_KEY_OPTIONS = [("小键盘" + str(i), "num" + str(i)) for i in range(10)]
+
 
 def parse_hotkey(text):
     parts = [p.strip().lower() for p in str(text or "").split("+")]
@@ -35,8 +47,9 @@ def parse_hotkey(text):
     return codes if len(codes) == len(parts) and codes else None
 
 
-def send_hotkey(codes):
+def send_hotkey(codes, hold=0.06, gap=0.03):
     """Windows API 发送热键（SendInput + 扫描码，全局生效，后台也能触发）；
+    按下/抬起之间保留真实按键的时序（hold=按住时长），避免目标软件把瞬时事件当噪音丢弃。
     非 Windows 返回 False（仅日志）"""
     if sys.platform != "win32":
         return False
@@ -67,11 +80,15 @@ def send_hotkey(codes):
     scan = {c: u.MapVirtualKeyW(c, 0) for c in codes}
     for c in mods:
         send(c, scan[c], 0)
+        time.sleep(gap)
     for c in keys:
         send(c, scan[c], 0)
+        time.sleep(hold)
         send(c, scan[c], UP)
+        time.sleep(gap)
     for c in reversed(mods):
         send(c, scan[c], UP)
+        time.sleep(gap)
     return True
 
 
@@ -130,6 +147,16 @@ def save_config(cfg):
         pass
 
 
+def live_profile_dir():
+    """直播浏览器登录态目录（同一台电脑复用，免重复扫码）。
+    打包版：软件目录/chrome_profiles/live；源码版：代码目录/chrome_profiles/live"""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = BASE_DIR
+    return os.path.join(base, "chrome_profiles", "live")
+
+
 # ── 主题色 ──
 C_BG = "#0d1117"; C_CARD = "#161b26"; C_CARD2 = "#1c2333"; C_BORDER = "#263040"
 C_TEXT = "#e8eef7"; C_SUB = "#8b98ad"; C_ACCENT = "#3d8bff"
@@ -141,6 +168,8 @@ STYLE_BTN_ACC = f"QPushButton {{ background: {C_ACCENT}; color: white; border: n
 STYLE_TBL = (f"QTableWidget {{ background: {C_CARD2}; border: 1px solid {C_BORDER}; border-radius: 8px; color: {C_TEXT}; gridline-color: {C_BORDER}; }}"
              f"QHeaderView::section {{ background: {C_CARD2}; color: {C_SUB}; border: none; padding: 6px; font-size: 11px; }}")
 STYLE_EDIT = f"QLineEdit, QDoubleSpinBox {{ background: {C_CARD2}; color: {C_TEXT}; border: 1px solid {C_BORDER}; border-radius: 6px; padding: 5px 8px; }} QLineEdit:focus {{ border-color: {C_ACCENT}; }}"
+STYLE_COMBO = (f"QComboBox {{ background: {C_CARD2}; color: {C_TEXT}; border: 1px solid {C_BORDER}; border-radius: 6px; padding: 3px 8px; }}"
+               f"QComboBox QAbstractItemView {{ background: {C_CARD2}; color: {C_TEXT}; selection-background-color: {C_ACCENT}; }}")
 
 
 class LiveMonitor(QThread):
@@ -175,10 +204,11 @@ class LiveMonitor(QThread):
         bundled = get_bundled_chrome()
         opt = Options()
         # 持久化登录态：同一台电脑复用同一份 Chrome 配置目录，扫码一次后不再重复登录
-        profile_dir = os.path.join(BASE_DIR, "chrome_profiles", "live")
+        profile_dir = live_profile_dir()
         try:
             os.makedirs(profile_dir, exist_ok=True)
             opt.add_argument(f"--user-data-dir={profile_dir}")
+            self.L(f"登录态目录：{profile_dir}（扫码一次，下次免登录）")
         except Exception as e:
             self.L(f"[yellow]⚠ 登录态目录创建失败（{e}），本次为临时登录")
         opt.add_experimental_option("prefs", {
@@ -525,29 +555,33 @@ class LivePage(QWidget):
         gl.addWidget(self._mk("触发冷却(秒)", 11, C_SUB), 1, 2)
         self.sp_cooldown = QDoubleSpinBox(); self.sp_cooldown.setRange(0.0, 60); self.sp_cooldown.setSingleStep(0.5)
         gl.addWidget(self.sp_cooldown, 1, 3)
-        gl.addWidget(self._mk("默认场景热键", 11, C_SUB), 2, 0)
-        self.ed_defkey = QLineEdit()
-        gl.addWidget(self.ed_defkey, 2, 1)
+        gl.addWidget(self._mk("主镜头热键(回切)", 11, C_SUB), 2, 0)
+        self.cmb_main_key = QComboBox()
+        for label, val in NUM_KEY_OPTIONS:
+            self.cmb_main_key.addItem(label, val)
+        self.cmb_main_key.setStyleSheet(STYLE_COMBO)
+        gl.addWidget(self.cmb_main_key, 2, 1)
         gl.addWidget(self._mk("场景保持(秒)", 11, C_SUB), 2, 2)
         self.sp_hold = QDoubleSpinBox(); self.sp_hold.setRange(0.0, 60); self.sp_hold.setSingleStep(0.5)
         gl.addWidget(self.sp_hold, 2, 3)
         gl.addWidget(self._mk("场景切换延迟(秒)", 11, C_SUB), 3, 0)
         self.sp_delay = QDoubleSpinBox(); self.sp_delay.setRange(0.0, 5); self.sp_delay.setSingleStep(0.1)
         gl.addWidget(self.sp_delay, 3, 1)
-        gl.addWidget(self._mk("热键格式：ctrl+7（横排数字）/ num9（小键盘）；关键词用逗号分隔，半角全角均可", 10, C_SUB), 4, 0, 1, 4)
-        for w in (self.ed_url, self.ed_sel, self.ed_defkey, self.sp_interval, self.sp_cooldown, self.sp_delay, self.sp_hold):
+        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 4, 0, 1, 4)
+        for w in (self.ed_url, self.ed_sel, self.sp_interval, self.sp_cooldown, self.sp_delay, self.sp_hold):
             w.setStyleSheet(STYLE_EDIT)
         outer.addWidget(card)
         # ── 规则表格区 ──
         mid = QHBoxLayout()
         f_scene = self._card(); sv = QVBoxLayout(f_scene); sv.setContentsMargins(12, 10, 12, 10)
         sh = QHBoxLayout(); sh.addWidget(self._mk("🎬 场景触发规则", 13, C_TEXT, True)); sh.addStretch(1)
-        b1 = QPushButton("＋ 添加规则"); b1.setStyleSheet(STYLE_BTN_ACC); b1.clicked.connect(lambda: self._add_row(self.tbl_scene, 2))
+        b1 = QPushButton("＋ 添加规则"); b1.setStyleSheet(STYLE_BTN_ACC); b1.clicked.connect(lambda: self._add_scene_row())
         sh.addWidget(b1); sv.addLayout(sh)
-        self.tbl_scene = QTableWidget(0, 3)
-        self.tbl_scene.setHorizontalHeaderLabels(["触发关键词（逗号分隔）", "发送热键", "操作"])
+        self.tbl_scene = QTableWidget(0, 5)
+        self.tbl_scene.setHorizontalHeaderLabels(["触发关键词", "修饰键", "按键", "测试", "删除"])
         self.tbl_scene.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tbl_scene.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        for i in (1, 2, 3, 4):
+            self.tbl_scene.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self.tbl_scene.verticalHeader().setVisible(False)
         self.tbl_scene.setStyleSheet(STYLE_TBL)
         sv.addWidget(self.tbl_scene)
@@ -557,7 +591,7 @@ class LivePage(QWidget):
         b2 = QPushButton("＋ 添加条目"); b2.setStyleSheet(STYLE_BTN_ACC); b2.clicked.connect(lambda: self._add_row(self.tbl_kn, 3))
         kh.addWidget(b2); kv.addLayout(kh)
         self.tbl_kn = QTableWidget(0, 3)
-        self.tbl_kn.setHorizontalHeaderLabels(["触发关键词（逗号分隔）", "回复答案", "操作"])
+        self.tbl_kn.setHorizontalHeaderLabels(["触发关键词", "回复答案", "操作"])
         self.tbl_kn.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.tbl_kn.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.tbl_kn.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -579,9 +613,16 @@ class LivePage(QWidget):
         self.btn_stop.setStyleSheet(STYLE_BTN)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop)
+        self.btn_save = QPushButton("💾 保存设置")
+        self.btn_save.setStyleSheet(STYLE_BTN)
+        self.btn_save.clicked.connect(self._save)
+        self.lb_saved = QLabel("")
+        self.lb_saved.setStyleSheet(f"color: {C_GREEN}; background: transparent;")
         ctrl.addWidget(self.btn_start)
         ctrl.addWidget(self.btn_confirm)
         ctrl.addWidget(self.btn_stop)
+        ctrl.addWidget(self.btn_save)
+        ctrl.addWidget(self.lb_saved)
         ctrl.addStretch(1)
         ctrl.addWidget(self._mk("监控日志", 11, C_SUB))
         outer.addLayout(ctrl)
@@ -604,25 +645,100 @@ class LivePage(QWidget):
             b.clicked.connect(lambda _, rr=r: tbl.removeRow(rr))
             tbl.setCellWidget(r, ncols - 1, b)
 
+    def _add_scene_row(self, kw="", mod="", key=""):
+        """场景规则行：单个关键词 + 修饰键/按键下拉 + 测试 + 删除"""
+        r = self.tbl_scene.rowCount()
+        self.tbl_scene.insertRow(r)
+        item = QTableWidgetItem(kw)
+        item.setForeground(Qt.white)
+        self.tbl_scene.setItem(r, 0, item)
+        cmb_m = QComboBox()
+        for label, val in MOD_OPTIONS:
+            cmb_m.addItem(label, val)
+        if mod:
+            i = cmb_m.findData(mod)
+            if i >= 0:
+                cmb_m.setCurrentIndex(i)
+        cmb_m.setStyleSheet(STYLE_COMBO)
+        self.tbl_scene.setCellWidget(r, 1, cmb_m)
+        cmb_k = QComboBox()
+        for label, val in KEY_OPTIONS:
+            cmb_k.addItem(label, val)
+        if key:
+            i = cmb_k.findData(key)
+            if i >= 0:
+                cmb_k.setCurrentIndex(i)
+        cmb_k.setStyleSheet(STYLE_COMBO)
+        self.tbl_scene.setCellWidget(r, 2, cmb_k)
+        bt = QPushButton("⚡ 测试")
+        bt.setStyleSheet(f"QPushButton {{ background: #1a2b4d; color: {C_ACCENT}; border: 1px solid #2b4a80; border-radius: 5px; padding: 3px 10px; }}")
+        bt.clicked.connect(lambda _, rr=r: self._test_hotkey(rr))
+        self.tbl_scene.setCellWidget(r, 3, bt)
+        bd = QPushButton("删除")
+        bd.setStyleSheet(f"QPushButton {{ background: #3a2222; color: {C_RED}; border: none; border-radius: 5px; padding: 3px 8px; }}")
+        bd.clicked.connect(lambda _, rr=r: self.tbl_scene.removeRow(rr))
+        self.tbl_scene.setCellWidget(r, 4, bd)
+
+    def _scene_hotkey(self, r):
+        """读取某行下拉组合出的热键字符串，如 ctrl+7 / num9"""
+        cmb_m = self.tbl_scene.cellWidget(r, 1)
+        cmb_k = self.tbl_scene.cellWidget(r, 2)
+        if not cmb_m or not cmb_k:
+            return ""
+        mod = cmb_m.currentData() or ""
+        key = cmb_k.currentData() or ""
+        if not key:
+            return ""
+        return f"{mod}+{key}" if mod else key
+
+    def _test_hotkey(self, r):
+        """手动测试某行热键：立即模拟按下，验证直播伴侣能否响应"""
+        hk = self._scene_hotkey(r)
+        if not hk:
+            self._append_log("[red]✗ 该行热键不完整，请选择按键")
+            return
+        codes = parse_hotkey(hk)
+        if not codes:
+            self._append_log(f"[red]✗ 热键「{hk}」无法解析")
+            return
+        self._append_log(f"[green]⚡ 测试热键「{hk}」已模拟按下…")
+        if send_hotkey(codes):
+            self._append_log("[cyan]  已发送。若直播伴侣没切换场景，检查：①直播伴侣已打开且设置同款全局快捷键；②本软件与直播伴侣都以管理员身份运行；③按键组合与直播伴侣设置一致")
+        else:
+            self._append_log("[yellow]  非 Windows 环境，测试热键已跳过")
+
     # ── 配置读写 ──
     def _load_to_ui(self):
         self.ed_url.setText(self.cfg.get("live_url", ""))
         self.ed_sel.setText(self.cfg.get("comment_selector", ""))
         self.sp_interval.setValue(float(self.cfg.get("poll_interval", 0.5)))
         self.sp_cooldown.setValue(float(self.cfg.get("cooldown", 2.0)))
-        self.ed_defkey.setText(self.cfg.get("default_scene_key", ""))
+        main_key = str(self.cfg.get("default_scene_key", "num9") or "num9")
+        i = self.cmb_main_key.findData(main_key)
+        if i >= 0:
+            self.cmb_main_key.setCurrentIndex(i)
         self.sp_delay.setValue(float(self.cfg.get("scene_switch_delay", 0.3)))
         self.sp_hold.setValue(float(self.cfg.get("scene_hold_seconds", 7.0)))
         for s in self.cfg.get("scenes", []):
-            self._add_row(self.tbl_scene, 2, s.get("keywords", ""), s.get("hotkey", ""))
+            hk = str(s.get("hotkey", "")).strip()
+            parts = [p.strip() for p in hk.split("+")] if hk else []
+            mod = "+".join(parts[:-1]) if len(parts) > 1 else ""
+            key = parts[-1] if parts else ""
+            for kw in re.split(r"[,，]", str(s.get("keywords", ""))):
+                kw = kw.strip()
+                if kw:
+                    self._add_scene_row(kw, mod, key)
         for k in self.cfg.get("knowledge", []):
-            self._add_row(self.tbl_kn, 3, k.get("keywords", ""), k.get("answer", ""))
+            for kw in re.split(r"[,，]", str(k.get("keywords", ""))):
+                kw = kw.strip()
+                if kw:
+                    self._add_row(self.tbl_kn, 3, kw, k.get("answer", ""))
 
     def _collect(self):
         scenes = []
         for r in range(self.tbl_scene.rowCount()):
             kw = (self.tbl_scene.item(r, 0).text() if self.tbl_scene.item(r, 0) else "").strip()
-            hk = (self.tbl_scene.item(r, 1).text() if self.tbl_scene.item(r, 1) else "").strip()
+            hk = self._scene_hotkey(r)
             if kw and hk:
                 scenes.append({"keywords": kw, "hotkey": hk})
         knowledge = []
@@ -639,12 +755,21 @@ class LivePage(QWidget):
             "comment_selectors": chain,
             "poll_interval": self.sp_interval.value(),
             "cooldown": self.sp_cooldown.value(),
-            "default_scene_key": self.ed_defkey.text().strip() or "num9",
+            "default_scene_key": self.cmb_main_key.currentData() or "num9",
             "scene_switch_delay": self.sp_delay.value(),
             "scene_hold_seconds": self.sp_hold.value(),
             "scenes": scenes,
             "knowledge": knowledge,
         }
+
+    def _save(self):
+        """保存设置到 live_config.json 并给出可见反馈"""
+        cfg = self._collect()
+        save_config(cfg)
+        self.cfg = cfg
+        now = time.strftime("%H:%M:%S")
+        self.lb_saved.setText(f"✅ 已保存 {now}")
+        self._append_log("[green]✅ 设置已保存（live_config.json），下次打开自动加载")
 
     # ── 控制 ──
     def _start(self):
