@@ -306,7 +306,7 @@ class LiveMonitor(QThread):
         "点赞次数", "实时在线人数", "实时进房人数", "新增渠道营收占比",
         "直播中", "未开播", "已开播", "互动", "商品", "数据", "更多",
     }
-    NOISE_PREFIX = ("预览流看播", "在线人数音浪收入送礼人数评论人数点赞次数")
+    NOISE_PREFIX = ("预览流看播", "在线人数音浪收入送礼人数评论人数点赞次数", "个人主页")
 
     @staticmethod
     def _looks_like_comment(t):
@@ -315,6 +315,8 @@ class LiveMonitor(QThread):
         if not t or len(t) < 1 or len(t) > 120:
             return False
         if t.isdigit():
+            return False
+        if re.fullmatch(r"[0-9.]+%?", t):
             return False
         if re.fullmatch(r"[\W_\s]+", t):
             return False
@@ -383,15 +385,17 @@ class LiveMonitor(QThread):
         })()
         """
         try:
-            return d.execute_script(js)
+            r = d.execute_script(js)
+            return r if isinstance(r, list) else []
         except Exception:
             return []
 
     def _drain_js_comments(self, d):
         """取走 JS 缓冲里的新文本（取完清空）"""
         try:
-            return d.execute_script(
+            r = d.execute_script(
                 "var a=window.__liveCommentBuf||[];window.__liveCommentBuf=[];return a;")
+            return r if isinstance(r, list) else []
         except Exception:
             return []
 
@@ -519,60 +523,64 @@ class LiveMonitor(QThread):
         last_beat = time.time()
         round_no = 0
         while self._run:
-            round_no += 1
-            # 采集：选择器 + MutationObserver + 全量快照兜底
-            texts = []
-            sel = self._pick_selector(d, sel_chain)
-            if sel:
-                texts.extend(self._scan_selector(d, sel))
             try:
-                ok = d.execute_script(
-                    "return window.__liveObserverInstalled===true && "
-                    "window.__liveObserverBody===document.body")
-                if not ok:
-                    self._inject_observer(d)
-            except Exception:
-                pass
-            js_texts = [x.get("text", "") for x in self._drain_js_comments(d) if isinstance(x, dict)]
-            texts.extend(js_texts)
-            if round_no % 4 == 0:  # 每约 2 秒全量扫描一次，观察器漏抓也能兜住
-                texts.extend(x.get("text", "") for x in self._sniff_all(d) if isinstance(x, dict))
-            fresh = 0
-            for text in texts:
-                if not self._looks_like_comment(text):
-                    continue
-                key = re.sub(r"\s+", "", text)[-40:]
-                now = time.time()
-                if key in seen and now - seen[key] < DEDUPE_WIN:
-                    continue
-                seen[key] = now
-                if len(seen) > 1000:
-                    seen = {k: v for k, v in seen.items() if now - v < DEDUPE_WIN * 3}
-                fresh += 1
-                self.log.emit(f"[white]💬 {text[:60]}")
-                for item in scenes:
-                    ks, hk, last_t = item
-                    if any(kw in text for kw in ks):
-                        if now - last_t >= cooldown:
-                            item[2] = now
-                            self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
-                            self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
-                            if switch_delay > 0:
-                                time.sleep(switch_delay)
-                            # 特效保持 hold_seconds 秒后自动返回主镜头（直播伴侣全局热键）
-                            if main_codes and sys.platform == "win32" and hold_seconds > 0:
-                                self._schedule_return_main(hold_seconds, main_codes)
-                        break
-                for ks, ans in knowledge:
-                    if any(kw in text for kw in ks):
-                        self.log.emit(f"[cyan]📚 知识库命中「{ks[0]}」→ 弹窗提示")
-                        self.knowledge_hit.emit(ks[0], ans)
-                        break
-            # 心跳日志：让用户确认软件活着（避免"毫无反应"的错觉）
-            if time.time() - last_beat >= 20:
-                last_beat = time.time()
-                sel_info = f"选择器 {self._active_sel}" if self._active_sel else "等待评论区出现"
-                self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {len(seen)} 条（最近 20 秒 {fresh} 条）")
+                round_no += 1
+                # 采集：选择器 + MutationObserver + 全量快照兜底
+                texts = []
+                sel = self._pick_selector(d, sel_chain)
+                if sel:
+                    texts.extend(self._scan_selector(d, sel))
+                try:
+                    ok = d.execute_script(
+                        "return window.__liveObserverInstalled===true && "
+                        "window.__liveObserverBody===document.body")
+                    if not ok:
+                        self._inject_observer(d)
+                except Exception:
+                    pass
+                js_texts = [x.get("text", "") for x in self._drain_js_comments(d) if isinstance(x, dict)]
+                texts.extend(js_texts)
+                if round_no % 4 == 0:  # 每约 2 秒全量扫描一次，观察器漏抓也能兜住
+                    texts.extend(x.get("text", "") for x in self._sniff_all(d) if isinstance(x, dict))
+                fresh = 0
+                for text in texts:
+                    if not self._looks_like_comment(text):
+                        continue
+                    key = re.sub(r"\s+", "", text)[-40:]
+                    now = time.time()
+                    if key in seen and now - seen[key] < DEDUPE_WIN:
+                        continue
+                    seen[key] = now
+                    if len(seen) > 1000:
+                        seen = {k: v for k, v in seen.items() if now - v < DEDUPE_WIN * 3}
+                    fresh += 1
+                    self.log.emit(f"[white]💬 {text[:60]}")
+                    for item in scenes:
+                        ks, hk, last_t = item
+                        if any(kw in text for kw in ks):
+                            if now - last_t >= cooldown:
+                                item[2] = now
+                                self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
+                                self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
+                                if switch_delay > 0:
+                                    time.sleep(switch_delay)
+                                # 特效保持 hold_seconds 秒后自动返回主镜头（直播伴侣全局热键）
+                                if main_codes and sys.platform == "win32" and hold_seconds > 0:
+                                    self._schedule_return_main(hold_seconds, main_codes)
+                            break
+                    for ks, ans in knowledge:
+                        if any(kw in text for kw in ks):
+                            self.log.emit(f"[cyan]📚 知识库命中「{ks[0]}」→ 弹窗提示")
+                            self.knowledge_hit.emit(ks[0], ans)
+                            break
+                # 心跳日志：让用户确认软件活着（避免"毫无反应"的错觉）
+                if time.time() - last_beat >= 20:
+                    last_beat = time.time()
+                    sel_info = f"选择器 {self._active_sel}" if self._active_sel else "等待评论区出现"
+                    self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {len(seen)} 条（最近 20 秒 {fresh} 条）")
+            except Exception as e:
+                # 单轮异常不致命：记录后继续监控，避免一次抖动拖死整个监控
+                self.log.emit(f"[red]本轮扫描异常（已自动继续）：{e}")
             try:
                 time.sleep(interval)
             except Exception:
