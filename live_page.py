@@ -839,6 +839,11 @@ class LiveMonitor(QThread):
                                             on_error=lambda m: self.log.emit(f"[red]✗ {m}"))
                                     else:
                                         self.log.emit(f"[red]✗ 热键「{hk}」解析失败，请检查规则设置")
+                                try:
+                                    import updater
+                                    updater.report_action(CONFIG_PATH, "zhibo", "scene_trigger")
+                                except Exception:
+                                    pass
                                 self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
                                 if switch_delay > 0:
                                     time.sleep(switch_delay)

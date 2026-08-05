@@ -474,6 +474,11 @@ class AccountWorker(QThread):
                 self._pm_n += 1
                 self.pm_cnt.emit(self.name, self._pm_n)
                 self.L(f"✅ 私信已回复: {fn} | 累计: {self._pm_n}", "green")
+                try:
+                    import updater
+                    updater.report_action(os.path.join(BASE_DIR, "config.json"), "zhlian", "private_msg_reply")
+                except Exception:
+                    pass
             else:
                 self.L(f"⚠ 私信回复失败: {fn}", "yellow")
             self._back_to_list()
@@ -1125,6 +1130,11 @@ class AccountWorker(QThread):
             """)
             if verify:
                 self.L("  \u2713 发送成功", "green")
+                try:
+                    import updater
+                    updater.report_action(os.path.join(BASE_DIR, "config.json"), "zhlian", "comment_reply")
+                except Exception:
+                    pass
             else:
                 self.L("  \u26a0 未验证到发送成功", "yellow")
 

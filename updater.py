@@ -11,6 +11,7 @@ import sys
 import json
 import uuid
 import time
+import threading
 import urllib.request
 import urllib.error
 
@@ -145,6 +146,65 @@ def report_usage_remote(cfg_file, app, app_version, extra=None):
         }
         if extra:
             payload.update(extra)
-        requests.post(url.rstrip("/") + "/api/report", json=payload, timeout=6)
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/report",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=6)
     except Exception:
         pass
+
+
+# ── 业务动作埋点（本地累计 + 每 60 秒批量上报一次，避免每次回复都发请求） ──
+_action_buf = {}
+_action_lock = threading.Lock()
+_flush_at = 0.0
+
+
+def report_action(cfg_file, app, action, count=1):
+    """记录一次业务动作：评论回复/私信回复/场景特效/视频解析。
+    先累计到内存，每 60 秒批量上报一次（失败静默，不影响使用）"""
+    global _flush_at
+    with _action_lock:
+        _action_buf[(app, action)] = _action_buf.get((app, action), 0) + int(count or 1)
+    now = time.time()
+    if now - _flush_at < 60:
+        return
+    _flush_at = now
+    threading.Thread(target=_flush_actions, args=(cfg_file,), daemon=True).start()
+
+
+def _flush_actions(cfg_file):
+    with _action_lock:
+        buf = dict(_action_buf)
+        _action_buf.clear()
+    if not buf:
+        return
+    for (app, action), n in buf.items():
+        try:
+            url = BACKEND_URL
+            if os.path.exists(cfg_file):
+                try:
+                    with open(cfg_file, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    if cfg.get("backend_url"):
+                        url = str(cfg["backend_url"]).strip()
+                except Exception:
+                    pass
+            if not url:
+                continue
+            payload = {
+                "deviceId": get_device_id(cfg_file),
+                "appVersion": "v2.0.92",
+                "app": app,
+                "action": action,
+                "count": n,
+                "platform": "windows" if sys.platform.startswith("win") else sys.platform,
+            }
+            req = urllib.request.Request(
+                url.rstrip("/") + "/api/report",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=6)
+        except Exception:
+            pass
