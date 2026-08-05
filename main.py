@@ -910,16 +910,28 @@ class MainWindow(QMainWindow):
     # ── 工具切换 ──
     def _enter_dm(self):
         """从启动页进入评论私信助手（无账号时先引导创建）"""
+        import threading
+        threading.Thread(
+            target=lambda: updater.report_usage_remote(CONFIG_FILE, "zhlian", VERSION),
+            daemon=True).start()
         self.root_stack.setCurrentWidget(self.dm_workspace)
         if len(self._pages) == 0:
             QTimer.singleShot(150, self._show_new_account_wizard)
 
     def _enter_live(self):
         """从启动页进入直播助手"""
+        import threading
+        threading.Thread(
+            target=lambda: updater.report_usage_remote(CONFIG_FILE, "zhibo", VERSION),
+            daemon=True).start()
         self.root_stack.setCurrentWidget(self.live_page)
 
     def _enter_downloader(self):
-        """从启动页进入无水印视频下载器"""
+        """从启动页进入智鉴助手（爆款视频分析）"""
+        import threading
+        threading.Thread(
+            target=lambda: updater.report_usage_remote(CONFIG_FILE, "zhijian-exe", VERSION),
+            daemon=True).start()
         self.root_stack.setCurrentWidget(self.downloader_page)
 
     def go_home(self):
@@ -1224,6 +1236,10 @@ class MainWindow(QMainWindow):
                 CONFIG_FILE, VERSION,
                 account_count=len(cfg.get("accounts", [])),
             )
+            import threading
+            threading.Thread(
+                target=lambda: updater.report_usage_remote(CONFIG_FILE, "workbench", VERSION),
+                daemon=True).start()
         except Exception:
             pass
 

@@ -16,6 +16,8 @@ import urllib.error
 
 # ── 云端接口地址（HTTP 触发域名） ─────────────────────────
 API_BASE = "https://yileyuanyunfuwu-d1f5mb6o341623f5-1462248439.ap-shanghai.app.tcloudbase.com"
+# 统一管理后台（采集服务隧道地址；可在 config.json 的 backend_url 字段覆盖）
+BACKEND_URL = "https://affair-rugs-bend-regulations.trycloudflare.com"
 TIMEOUT = 15
 
 
@@ -116,5 +118,33 @@ def report_stats(cfg_file, app_version, account_count, extra=None):
                 if extra.get(k) is not None:
                     payload[k] = int(extra[k] or 0)
         _post("reportStats", payload)
+    except Exception:
+        pass
+
+
+def report_usage_remote(cfg_file, app, app_version, extra=None):
+    """静默上报到统一管理后台（采集服务 /api/report），失败不影响使用。
+    app: workbench / zhlian / zhibo / zhijian-exe / zhijian-apk"""
+    try:
+        url = BACKEND_URL
+        if os.path.exists(cfg_file):
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if cfg.get("backend_url"):
+                    url = str(cfg["backend_url"]).strip()
+            except Exception:
+                pass
+        if not url:
+            return
+        payload = {
+            "deviceId": get_device_id(cfg_file),
+            "appVersion": app_version,
+            "app": app,
+            "platform": "windows" if sys.platform.startswith("win") else sys.platform,
+        }
+        if extra:
+            payload.update(extra)
+        requests.post(url.rstrip("/") + "/api/report", json=payload, timeout=6)
     except Exception:
         pass
