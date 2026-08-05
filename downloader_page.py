@@ -603,17 +603,17 @@ class DownloaderPage(QWidget):
         """把内置的手机版 APK 导出到用户选择的位置"""
         base = os.path.dirname(os.path.abspath(__file__))
         candidates = [
-            os.path.join(base, "apk", "智鉴助手_v1.0.30.apk"),
-            os.path.join(base, "runtime", "智鉴助手_v1.0.30.apk"),
+            os.path.join(base, "apk", "智鉴助手_v1.0.31.apk"),
+            os.path.join(base, "runtime", "智鉴助手_v1.0.31.apk"),
         ]
         src = next((p for p in candidates if os.path.exists(p)), None)
         if not src:
             QMessageBox.information(
                 self, "提示",
-                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.30.apk，或用手机直接安装。")
+                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.31.apk，或用手机直接安装。")
             return
         d, _ = QFileDialog.getSaveFileName(
-            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.30.apk"), "APK (*.apk)")
+            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.31.apk"), "APK (*.apk)")
         if d:
             try:
                 shutil.copy(src, d)
