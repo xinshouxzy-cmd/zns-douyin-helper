@@ -283,7 +283,7 @@ DEFAULT_CONFIG = {
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
     "scene_hold_seconds": 7.0,
     "key_hold_seconds": 0.25,       # 按键按住时长：模拟人手按键，太短部分软件轮询会漏掉
-    "foreground_trigger": True,     # 触发时自动把直播伴侣置顶到前台（特效完恢复原窗口）
+    "foreground_trigger": True,     # 触发时自动把本软件置顶到前台（特效完恢复原窗口）
     "dedupe_window": 600,
     "scenes": [
         {"keywords": "嘉年华", "hotkey": "ctrl+1"},
@@ -359,9 +359,10 @@ class LiveMonitor(QThread):
     status = pyqtSignal(str, str)
     done = pyqtSignal(str, bool)
 
-    def __init__(self, cfg, parent=None):
+    def __init__(self, cfg, parent=None, window_handle=None):
         super().__init__(parent)
         self.cfg = cfg
+        self._own_hwnd = window_handle  # 本软件主窗口句柄（触发时置顶用）
         self._run = True
         self._confirmed = threading.Event()
         self._active_sel = None   # 命中并缓存的选择器（heartbeat 日志使用）
@@ -824,13 +825,12 @@ class LiveMonitor(QThread):
                                 if sys.platform == "win32":
                                     codes2 = parse_hotkey(hk)
                                     if codes2:
-                                        # 直播伴侣需在前台才响应热键：触发前把它置顶，
+                                        # 本软件需在前台注入才被系统接受：触发前把本软件置顶，
                                         # 记录原前台窗口，特效结束回主镜头后自动恢复
                                         if fg_switch:
                                             self._fg_before_trigger = _get_foreground_hwnd()
-                                            win = _find_window_by_title(("直播伴侣", "抖音直播"))
-                                            if win:
-                                                _activate_window(win)
+                                            if self._own_hwnd:
+                                                _activate_window(self._own_hwnd)
                                                 time.sleep(0.15)
                                         send_hotkey(
                                             codes2,
@@ -966,7 +966,7 @@ class LivePage(QWidget):
         gl.addWidget(self._mk("按键按住(秒)", 11, C_SUB), 2, 2)
         self.sp_key_hold = QDoubleSpinBox(); self.sp_key_hold.setRange(0.05, 0.6); self.sp_key_hold.setSingleStep(0.05)
         gl.addWidget(self.sp_key_hold, 2, 3)
-        self.chk_foreground = QCheckBox("触发时自动置顶直播伴侣窗口（特效结束回主镜头后自动恢复原窗口）")
+        self.chk_foreground = QCheckBox("触发时自动置顶本软件窗口（特效结束回主镜头后自动恢复原窗口）")
         self.chk_foreground.setStyleSheet(f"color: {C_SUB}; background: transparent;")
         gl.addWidget(self.chk_foreground, 3, 0, 1, 4)
         gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 4, 0, 1, 4)
@@ -1192,7 +1192,7 @@ class LivePage(QWidget):
         save_config(cfg)
         self.cfg = cfg
         self.txt_log.clear()
-        self.monitor = LiveMonitor(cfg)
+        self.monitor = LiveMonitor(cfg, window_handle=int(self.window().winId()))
         self.monitor.log.connect(self._append_log)
         self.monitor.scene_triggered.connect(self._on_scene)
         self.monitor.knowledge_hit.connect(self._on_knowledge)
