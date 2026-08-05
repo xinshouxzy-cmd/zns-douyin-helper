@@ -171,7 +171,9 @@ def deepseek_report(meta, transcript, frame_text, frame_visual, comments=None, p
         "4. 为什么可能受欢迎（结合互动数据与评论区观众反应分析）\n"
         "5. 可以借鉴的做法（给想拍视频的人的具体建议）\n"
         "要求：只写已经掌握的信息，不要编造数据或细节；"
-        "评论区有内容就认真分析，没有就说明未获取到；"
+        "评论区内容如果标记为【未获取到评论区内容】，绝对禁止编造任何评论、"
+        "禁止引用不存在的观众发言，第3小节只能写：本次未获取到评论区内容（"
+        "可能评论未公开/关闭，或采集受限）；"
         "不要出现'信息不足''缺失''建议补充'等开发术语。")
     cmt_text = ""
     if comments:
@@ -182,7 +184,7 @@ def deepseek_report(meta, transcript, frame_text, frame_visual, comments=None, p
         cmt_text = "\n".join(lines)
     user = (f"视频信息：{meta}\n\n画面文字识别：{frame_text or '（无）'}\n\n"
             f"画面理解：{frame_visual or '（无）'}\n\n完整文案（含时间点）：\n{transcript or '（无口播）'}"
-            f"\n\n评论区内容（前30条）：\n{cmt_text or '（未获取到评论区内容）'}")
+            f"\n\n评论区内容（前30条）：\n{cmt_text or '【未获取到评论区内容】'}")
     j = _http_json(
         "https://api.deepseek.com/chat/completions",
         {"Authorization": "Bearer " + DS_KEY, "Content-Type": "application/json"},

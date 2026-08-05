@@ -572,7 +572,7 @@ class DownloaderPage(QWidget):
             for c in cmts[:15]:
                 cmt_lines.append(f"　{c.get('user', '?')}：{c.get('text', '')}"
                                  + (f"（赞{c.get('digg')}）" if c.get("digg") else ""))
-            cmt_part = "【💬 评论区热评】\n" + "\n".join(cmt_lines) + "\n"
+            cmt_part = "【💬 评论区热评（真实抓取）】\n" + "\n".join(cmt_lines) + "\n"
         parts = [base]
         if res.get("no_speech"):
             parts.append("（未识别到口播语音：纯音乐/无人声视频，已用 AI 画面理解分析）")
@@ -580,6 +580,8 @@ class DownloaderPage(QWidget):
             parts.append("【🎙 音频转写文案（本视频语音识别）】\n" + res["transcript"])
         if cmt_part:
             parts.append(cmt_part.rstrip())
+        else:
+            parts.append("⚠️ 本次未获取到评论区内容（评论可能未公开/关闭，或采集受限）——报告不会编造评论")
         parts.append("【📋 爆款分析报告】\n" + res.get("report", ""))
         self.txt_report.setPlainText("\n\n".join(parts))
         self._log("✅ 智能分析完成！可点击【下载无水印视频】保存原视频", C_GREEN)
@@ -601,17 +603,17 @@ class DownloaderPage(QWidget):
         """把内置的手机版 APK 导出到用户选择的位置"""
         base = os.path.dirname(os.path.abspath(__file__))
         candidates = [
-            os.path.join(base, "apk", "智鉴助手_v1.0.26.apk"),
-            os.path.join(base, "runtime", "智鉴助手_v1.0.26.apk"),
+            os.path.join(base, "apk", "智鉴助手_v1.0.27.apk"),
+            os.path.join(base, "runtime", "智鉴助手_v1.0.27.apk"),
         ]
         src = next((p for p in candidates if os.path.exists(p)), None)
         if not src:
             QMessageBox.information(
                 self, "提示",
-                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.26.apk，或用手机直接安装。")
+                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.27.apk，或用手机直接安装。")
             return
         d, _ = QFileDialog.getSaveFileName(
-            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.26.apk"), "APK (*.apk)")
+            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.27.apk"), "APK (*.apk)")
         if d:
             try:
                 shutil.copy(src, d)
