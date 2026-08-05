@@ -4,17 +4,18 @@
 渐变品牌标题 + 柔和光晕 + 星云粒子 + 玻璃拟态卡片（平滑过渡/上浮/辉光）
 设计语言：深空蓝底 + 蓝青科技色 + 暖金银行点缀，避免"AI 生成感"，追求品牌质感。
 """
-import random, math
+import os, random, math
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF
 from PyQt5.QtGui import (
     QPainter, QLinearGradient, QRadialGradient, QColor,
-    QFont, QPen, QBrush,
+    QFont, QPen, QBrush, QPixmap,
 )
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QFrame, QVBoxLayout, QHBoxLayout, QSpacerItem,
     QSizePolicy, QGraphicsDropShadowEffect,
 )
+from worker import assets_path
 
 C_BG0 = QColor("#070b14")
 C_ACC1 = QColor("#4d94ff")
@@ -77,7 +78,7 @@ class CardWidget(QFrame):
     """玻璃拟态卡片：默认低存在感，悬停平滑过渡到上浮 + 辉光 + 渐变描边"""
     clicked = pyqtSignal()
 
-    def __init__(self, icon, title, desc, accent, enabled=True, parent=None):
+    def __init__(self, icon, title, desc, accent, enabled=True, parent=None, icon_pix=None):
         super().__init__(parent)
         self._enabled = enabled
         self._accent = QColor(accent) if not isinstance(accent, QColor) else accent
@@ -94,7 +95,12 @@ class CardWidget(QFrame):
         self.lb_icon = QLabel(icon)
         self.lb_icon.setAlignment(Qt.AlignCenter)
         self.lb_icon.setFixedHeight(52)
-        self.lb_icon.setStyleSheet("background: transparent; font-size: 40px;")
+        if icon_pix is not None and not icon_pix.isNull():
+            self.lb_icon.setPixmap(
+                icon_pix.scaled(52, 52, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.lb_icon.setStyleSheet("background: transparent;")
+        else:
+            self.lb_icon.setStyleSheet("background: transparent; font-size: 40px;")
         icon_glow = QGraphicsDropShadowEffect(self)
         icon_glow.setBlurRadius(22)
         icon_glow.setOffset(0, 0)
@@ -199,6 +205,12 @@ class HomePage(QWidget):
         self.particles = self._init_particles()
         self._build_ui()
         self.timer = QTimer(self)
+
+    def _icon(self, name):
+        p = assets_path(name)
+        if os.path.exists(p):
+            return QPixmap(p)
+        return None
         self.timer.timeout.connect(self._tick)
         self.timer.start(33)
 
@@ -340,13 +352,16 @@ class HomePage(QWidget):
         cards = QHBoxLayout()
         cards.setSpacing(30)
         cards.addStretch(1)
-        c_dm = CardWidget("💬", "智联助手", "评论 + 私信多账号自动回复\n话术模板 · 多账号并行", QColor("#4d94ff"))
+        c_dm = CardWidget("💬", "智联助手", "评论 + 私信多账号自动回复\n话术模板 · 多账号并行",
+                          QColor("#2aa868"), icon_pix=self._icon("icon_zhlian.png"))
         c_dm.clicked.connect(self.enter_dm.emit)
         cards.addWidget(c_dm)
-        c_live = CardWidget("🎥", "智播助手", "评论关键词触发场景特效\n知识库问答 · 自动播报", QColor("#22d3ee"))
+        c_live = CardWidget("🎥", "智播助手", "评论关键词触发场景特效\n知识库问答 · 自动播报",
+                            QColor("#22c55e"), icon_pix=self._icon("icon_zhibo.png"))
         c_live.clicked.connect(self.enter_live.emit)
         cards.addWidget(c_live)
-        c_dl = CardWidget("🔍", "智鉴助手", "爆款视频智能拆解分析\n下载无水印 · AI 文案 · 爆款报告", QColor("#34d399"))
+        c_dl = CardWidget("🔍", "智鉴助手", "爆款视频智能拆解分析\n下载无水印 · AI 文案 · 爆款报告",
+                          QColor("#34d399"), icon_pix=self._icon("icon_zhijian.png"))
         c_dl.clicked.connect(self.enter_downloader.emit)
         cards.addWidget(c_dl)
         cards.addStretch(1)

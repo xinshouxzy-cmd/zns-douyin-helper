@@ -11,6 +11,14 @@ import os, sys, json, time, re, subprocess, traceback
 from datetime import datetime
 from threading import Event
 
+
+def assets_path(name):
+    """定位内置资源文件（开发/打包均可用）"""
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "assets", name)
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys

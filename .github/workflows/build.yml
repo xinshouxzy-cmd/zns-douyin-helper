@@ -68,6 +68,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --onedir --windowed --name "遵农商_抖音AI工作台" `
+            --icon "assets\icon_main.ico" `
             --add-data "config.json;." `
             --add-data "worker.py;." `
             --add-data "updater.py;." `
@@ -80,6 +81,7 @@ jobs:
             --add-data "comment_data;comment_data" `
             --add-data "runtime;runtime" `
             --add-data "apk;apk" `
+            --add-data "assets;assets" `
             --add-binary "chromedriver.exe;." `
             --collect-all PyQt5 `
             --collect-all selenium `

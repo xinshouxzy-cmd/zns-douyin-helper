@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QPainter
 
-from worker import AccountWorker, BASE_DIR
+from worker import AccountWorker, BASE_DIR, assets_path
 import updater
 from home_page import HomePage
 from live_page import LivePage
@@ -1287,6 +1287,12 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
+    try:
+        icon_p = assets_path("icon_main.ico")
+        if os.path.exists(icon_p):
+            app.setWindowIcon(QIcon(icon_p))
+    except Exception:
+        pass
     if sys.platform == "darwin":
         app.setStyle("Fusion")
     win = MainWindow()
