@@ -10,7 +10,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QDoubleSpinBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QTextEdit, QComboBox, QCheckBox,
+    QHeaderView, QMessageBox, QTextEdit, QComboBox,
 )
 from selenium.webdriver.common.by import By
 from worker import BASE_DIR, find_chromedriver, get_bundled_chrome
@@ -283,7 +283,6 @@ DEFAULT_CONFIG = {
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
     "scene_hold_seconds": 7.0,
     "key_hold_seconds": 0.25,       # 按键按住时长：模拟人手按键，太短部分软件轮询会漏掉
-    "activate_before_send": True,   # 发送热键前临时把直播伴侣窗口带到前台（发完恢复）
     "dedupe_window": 600,
     "scenes": [
         {"keywords": "嘉年华", "hotkey": "ctrl+1"},
@@ -561,7 +560,7 @@ class LiveMonitor(QThread):
             time.sleep(delay)
             if self._run and self._return_seq == my_seq:
                 try:
-                    send_hotkey(codes, hold=hold)
+                    send_hotkey(codes, hold=hold, repeat=3)
                     self.log.emit(f"[cyan]↩ 场景已保持 {delay:g} 秒，已自动返回主镜头")
                 except Exception as e:
                     self.log.emit(f"[red]自动返回主镜头失败：{e}")
@@ -659,7 +658,6 @@ class LiveMonitor(QThread):
         switch_delay = max(0.0, float(cfg.get("scene_switch_delay", 0.3)))
         hold_seconds = max(0.0, float(cfg.get("scene_hold_seconds", 7.0)))
         key_hold = max(0.05, float(cfg.get("key_hold_seconds", 0.25)))
-        activate_switch = bool(cfg.get("activate_before_send", True))
         scenes = []
         for s in cfg.get("scenes", []):
             ks = [k.strip() for k in re.split(r"[,，]", str(s.get("keywords", ""))) if k.strip()]
@@ -806,31 +804,20 @@ class LiveMonitor(QThread):
                         if any(kw in match_text for kw in ks):
                             if now - last_t >= cooldown:
                                 item[2] = now
+                                # 立即作废上一场景的"返回主镜头"计时（必须先于发送热键，
+                                # 否则保持时间短时旧计时会在新场景热键发完前触发，误回主镜头）
+                                self._return_seq += 1
                                 # 热键在监控线程里直接发送（不等 UI 线程排队），
-                                # 前台/后台/最小化都不受影响；发送失败会打印原因
-                                self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
+                                # 发送参数与测试按钮完全一致（按住 0.25s + 连发 3 遍）
+                                self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}（连发3遍，按住{max(key_hold, 0.25):g}s）")
                                 if sys.platform == "win32":
                                     codes2 = parse_hotkey(hk)
                                     if codes2:
-                                        fg_before = _foreground_title()
-                                        prev_hwnd = None
-                                        activated = False
-                                        if activate_switch:
-                                            hwnd = _find_window_by_title(("直播伴侣", "抖音直播"))
-                                            if hwnd:
-                                                prev_hwnd = _get_foreground_hwnd()
-                                                activated = _activate_window(hwnd)
-                                                time.sleep(0.12)
                                         send_hotkey(
                                             codes2,
-                                            hold=key_hold,
+                                            hold=max(key_hold, 0.25),
+                                            repeat=3,
                                             on_error=lambda m: self.log.emit(f"[red]✗ {m}"))
-                                        if activated and prev_hwnd:
-                                            time.sleep(0.1)
-                                            _activate_window(prev_hwnd)
-                                        self.log.emit(
-                                            f"[cyan]  ↳ 发送时前台窗口：{fg_before or '未知'}"
-                                            f"{'（已临时切到直播伴侣再发，发完已恢复）' if activated else ''}")
                                     else:
                                         self.log.emit(f"[red]✗ 热键「{hk}」解析失败，请检查规则设置")
                                 self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
@@ -838,7 +825,8 @@ class LiveMonitor(QThread):
                                     time.sleep(switch_delay)
                                 # 特效保持 hold_seconds 秒后自动返回主镜头（直播伴侣全局热键）
                                 if main_codes and sys.platform == "win32" and hold_seconds > 0:
-                                    self._schedule_return_main(hold_seconds, main_codes, hold=key_hold)
+                                    self._schedule_return_main(hold_seconds, main_codes,
+                                                               hold=max(key_hold, 0.25))
                                     self.log.emit(
                                         f"[cyan]⏱ 场景保持计时重置：{hold_seconds:g} 秒后自动返回主镜头（以最近一次触发为准）")
                             break
@@ -954,10 +942,7 @@ class LivePage(QWidget):
         gl.addWidget(self._mk("按键按住(秒)", 11, C_SUB), 2, 2)
         self.sp_key_hold = QDoubleSpinBox(); self.sp_key_hold.setRange(0.05, 0.6); self.sp_key_hold.setSingleStep(0.05)
         gl.addWidget(self.sp_key_hold, 2, 3)
-        self.chk_activate = QCheckBox("触发前临时激活直播伴侣窗口（发完自动恢复，提高成功率）")
-        self.chk_activate.setStyleSheet(f"color: {C_SUB}; background: transparent;")
-        gl.addWidget(self.chk_activate, 3, 0, 1, 4)
-        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 4, 0, 1, 4)
+        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 3, 0, 1, 4)
         for w in (self.ed_url, self.ed_sel, self.sp_interval, self.sp_cooldown, self.sp_delay, self.sp_hold, self.sp_key_hold):
             w.setStyleSheet(STYLE_EDIT)
         outer.addWidget(card)
@@ -1116,7 +1101,6 @@ class LivePage(QWidget):
         self.sp_delay.setValue(float(self.cfg.get("scene_switch_delay", 0.3)))
         self.sp_hold.setValue(float(self.cfg.get("scene_hold_seconds", 7.0)))
         self.sp_key_hold.setValue(float(self.cfg.get("key_hold_seconds", 0.25)))
-        self.chk_activate.setChecked(bool(self.cfg.get("activate_before_send", True)))
         for s in self.cfg.get("scenes", []):
             hk = str(s.get("hotkey", "")).strip()
             parts = [p.strip() for p in hk.split("+")] if hk else []
@@ -1157,7 +1141,6 @@ class LivePage(QWidget):
             "scene_switch_delay": self.sp_delay.value(),
             "scene_hold_seconds": self.sp_hold.value(),
             "key_hold_seconds": self.sp_key_hold.value(),
-            "activate_before_send": self.chk_activate.isChecked(),
             "scenes": scenes,
             "knowledge": knowledge,
         }
