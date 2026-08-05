@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-遵农商·抖音客服助手
+遵农商·智媒工作台
 多账号抖音私信+评论自动回复工具
 基于 PyQt5 + Selenium
 """
@@ -32,7 +32,7 @@ except Exception:
     VERSION = "v2.0"
 
 # ── 配置 ──────────────────────────────────────────
-APP_TITLE = f"遵农商·抖音AI工作台 {VERSION} — 辛振宇"
+APP_TITLE = f"遵农商·智媒工作台 {VERSION} — 辛振宇"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_PM_REPLY = "遵义地区政策了解，留下☎️"
 DEFAULT_CMT_REPLY = "具体抖音✉️"

@@ -46,6 +46,16 @@ jobs:
           print(f'ChromeDriver bundled: {dst}')
           "
 
+      - name: Download ffmpeg (Windows)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" -OutFile "$env:TEMP\ffmpeg.zip"
+          Expand-Archive -Path "$env:TEMP\ffmpeg.zip" -DestinationPath "$env:TEMP\ffmpeg" -Force
+          New-Item -ItemType Directory -Force -Path runtime | Out-Null
+          Copy-Item "$env:TEMP\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe" "runtime\ffmpeg.exe" -Force
+          Copy-Item "$env:TEMP\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe" "runtime\ffprobe.exe" -Force
+          Write-Host "ffmpeg bundled"
+
       - name: Create data dirs
         shell: pwsh
         run: |
@@ -63,11 +73,13 @@ jobs:
             --add-data "updater.py;." `
             --add-data "home_page.py;." `
             --add-data "live_page.py;." `
+            --add-data "zns_analyze.py;." `
             --add-data "_version.py;." `
             --add-data "replied_records;replied_records" `
             --add-data "chrome_profiles;chrome_profiles" `
             --add-data "comment_data;comment_data" `
             --add-data "runtime;runtime" `
+            --add-data "apk;apk" `
             --add-binary "chromedriver.exe;." `
             --collect-all PyQt5 `
             --collect-all selenium `
@@ -79,7 +91,7 @@ jobs:
         shell: pwsh
         run: |
           @"
-          遵农商·抖音AI工作台 v$env:VERSION
+          遵农商·智媒工作台 v$env:VERSION
           ===================================
 
           【使用前请确保已安装 Chrome 浏览器】
@@ -88,16 +100,17 @@ jobs:
           【使用方法】
             双击 遵农商_抖音AI工作台.exe 即可运行
             打开后进入工具集合首页（启动页）
-            点击「评论私信助手」配置账号并自动回复
-            点击「直播助手」配置场景触发规则与知识库后开启监控
-            点击「无水印下载器」粘贴抖音链接下载无水印原视频
+            点击「智联助手」配置账号并自动回复（评论/私信）
+            点击「智播助手」配置场景触发规则与知识库后开启监控
+            点击「智鉴助手」粘贴抖音链接：无水印下载 + AI 文案 + 爆款分析，可导出手机版 APK
 
           【功能】
             - 多账号抖音私信自动回复
             - 多账号抖音评论自动回复
             - 直播评论关键词 → 自动触发热键切换直播伴侣场景/特效
             - 直播知识库问答（观众提问自动弹出答案）
-            - 抖音无水印视频下载（粘贴链接一键解析下载）
+            - 智鉴助手：爆款视频智能拆解（无水印下载 + AI 文案 + 画面理解 + 爆款报告）
+            - 智鉴助手·手机版 APK 一键导出（软件内下载按钮）
 
           遵义农商银行 出品
           "@ | Out-File -FilePath "dist\遵农商_抖音AI工作台\使用说明.txt" -Encoding UTF8
@@ -125,7 +138,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "${{ env.VERSION }}-${{ env.BUILD_ID }}"
-          name: "遵农商·抖音AI工作台 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
+          name: "遵农商·智媒工作台 ${{ env.VERSION }} (Build ${{ env.BUILD_ID }})"
           files: "ZNS_Douyin_Helper_v${{ env.VERSION_NUM }}.zip"
           prerelease: false
         continue-on-error: true

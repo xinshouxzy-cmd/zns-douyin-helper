@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-遵农商·抖音AI工作台 — 无水印视频下载器（第3个工具）
-功能：粘贴抖音分享链接 → 解析视频信息 → 一键下载高清无水印视频
-核心解析逻辑整合自《抖音无水印下载》UniApp 源码
+遵农商·智媒工作台 — 智鉴助手（第3个工具）
+功能：粘贴抖音分享链接 → 下载无水印视频 + AI 拆解爆款
+（语音转写文案 / GLM 画面理解 / DeepSeek 爆款分析报告 + 手机版 APK 导出）
 """
 
-import os, re, json, time, html as _html
+import os, re, json, time, shutil, tempfile, html as _html
 import requests
+import zns_analyze
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
@@ -210,6 +211,56 @@ class DownloadWorker(QThread):
             self.fail.emit(str(e))
 
 
+# ── 智能分析线程（下载 → 转写 → 画面理解 → 爆款报告） ──
+class AnalyzeWorker(QThread):
+    step = pyqtSignal(str, int)   # (消息, 进度0-100)
+    ok = pyqtSignal(dict)         # {desc, author, stats, transcript, report}
+    fail = pyqtSignal(str)
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def run(self):
+        try:
+            self.step.emit("解析视频信息…", 5)
+            info = parse_douyin(self.url)
+            self.play_url = info["play"]
+            tmp = tempfile.mkdtemp(prefix="zns_analyze_")
+            video = os.path.join(tmp, "video.mp4")
+            self.step.emit("下载无水印视频…", 20)
+            hdr = {"User-Agent": UA, "Referer": "https://www.douyin.com/"}
+            r = requests.get(info["play"], headers=hdr, stream=True, timeout=120)
+            r.raise_for_status()
+            with open(video, "wb") as f:
+                for chunk in r.iter_content(chunk_size=256 * 1024):
+                    if chunk:
+                        f.write(chunk)
+            if os.path.getsize(video) < 10000:
+                raise RuntimeError("视频下载异常（文件过小）")
+            self.step.emit("提取音频…", 45)
+            wav = os.path.join(tmp, "audio.wav")
+            zns_analyze.extract_audio(video, wav)
+            self.step.emit("语音转写文案…", 60)
+            transcript, got = zns_analyze.baidu_asr(wav)
+            self.step.emit("AI 理解画面…", 75)
+            vis = zns_analyze.glm_understand_frames(video, tmp)
+            self.step.emit("生成爆款分析报告…", 88)
+            meta = json.dumps({
+                "desc": info.get("desc", ""),
+                "stats": {"likes": info.get("digg", 0), "comments": info.get("comment", 0),
+                          "shares": info.get("share", 0)},
+            }, ensure_ascii=False)
+            report = zns_analyze.deepseek_report(meta, transcript, "", vis)
+            self.ok.emit({
+                "desc": info.get("desc", ""), "author": info.get("author", ""),
+                "stats": info, "transcript": transcript if got else "",
+                "no_speech": not got, "report": report, "video_path": video,
+            })
+        except Exception as e:
+            self.fail.emit(str(e))
+
+
 # ── 页面 ────────────────────────────────────────────
 class DownloaderPage(QWidget):
     go_home = pyqtSignal()
@@ -244,10 +295,10 @@ class DownloaderPage(QWidget):
         btn_back.clicked.connect(self.go_home)
         top.addWidget(btn_back)
 
-        title = QLabel("🎬 无水印视频下载器")
+        title = QLabel("🔍 智鉴助手")
         title.setStyleSheet(f"color:{C_TEXT}; font-size:19px; font-weight:bold;")
         top.addWidget(title)
-        sub = QLabel("粘贴抖音分享链接，一键下载高清无水印视频")
+        sub = QLabel("粘贴抖音分享链接：下载无水印视频 + AI 拆解爆款（文案/画面/报告）")
         sub.setStyleSheet(f"color:{C_SUB}; font-size:12px;")
         top.addWidget(sub)
         top.addStretch()
@@ -284,7 +335,7 @@ class DownloaderPage(QWidget):
             f"QLineEdit:focus {{ border-color:{C_ACCENT}; }}")
         self.le_url.returnPressed.connect(self._on_parse)
         row.addWidget(self.le_url, 1)
-        self.btn_parse = QPushButton("🚀 解析视频")
+        self.btn_parse = QPushButton("🔍 解析并分析")
         self.btn_parse.setStyleSheet(
             f"QPushButton {{ background:{C_ACCENT}; color:white; border:none; border-radius:8px;"
             f" padding:12px 26px; font-size:14px; font-weight:bold; }}"
@@ -294,7 +345,7 @@ class DownloaderPage(QWidget):
         row.addWidget(self.btn_parse)
         in_lay.addLayout(row)
 
-        tip = QLabel("💡 支持：视频分享口令 / 分享链接 / 视频详情页地址，解析成功后即可预览并下载无水印原视频")
+        tip = QLabel("💡 支持：分享口令 / 分享链接 / 视频详情页地址。点击【解析并分析】自动完成：下载 → 转写文案 → AI 看画面 → 爆款分析报告")
         tip.setStyleSheet(f"color:{C_SUB}; font-size:12px;")
         in_lay.addWidget(tip)
         body.addWidget(card_in)
@@ -350,6 +401,25 @@ class DownloaderPage(QWidget):
         res_lay.addLayout(info, 1)
         body.addWidget(self.card_result)
 
+        # ── 分析报告卡片 ──
+        self.card_report = QFrame()
+        self.card_report.setStyleSheet(
+            f"QFrame {{ background:{C_CARD}; border:1px solid {C_BORDER}; border-radius:12px; }}")
+        self.card_report.setVisible(False)
+        rep_lay = QVBoxLayout(self.card_report)
+        rep_lay.setContentsMargins(18, 16, 18, 16)
+        rep_lay.setSpacing(10)
+        rep_title = QLabel("📄 分析结果（文案 + 爆款解读）")
+        rep_title.setStyleSheet(f"color:{C_TEXT}; font-size:14px; font-weight:bold;")
+        rep_lay.addWidget(rep_title)
+        self.txt_report = QTextEdit()
+        self.txt_report.setReadOnly(True)
+        self.txt_report.setStyleSheet(
+            f"QTextEdit {{ background:{C_BG}; color:{C_TEXT}; border:1px solid {C_BORDER};"
+            f" border-radius:8px; padding:10px 14px; font-size:13px; }}")
+        rep_lay.addWidget(self.txt_report)
+        body.addWidget(self.card_report)
+
         # ── 下载进度 ──
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -377,10 +447,17 @@ class DownloaderPage(QWidget):
     def _build_footer(self):
         foot = QHBoxLayout()
         foot.setContentsMargins(24, 4, 24, 10)
-        lbl = QLabel(f"遵农商·抖音AI工作台 · 无水印视频下载器 · 保存目录：{self.save_dir}")
+        lbl = QLabel(f"遵农商·智媒工作台 · 智鉴助手 · 保存目录：{self.save_dir}")
         lbl.setStyleSheet(f"color:#4a5568; font-size:11px;")
         foot.addWidget(lbl)
         foot.addStretch()
+        self.btn_apk = QPushButton("📱 下载手机版（APK）")
+        self.btn_apk.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{C_CYAN}; border:1px solid {C_BORDER};"
+            f" border-radius:8px; padding:6px 14px; font-size:12px; }}"
+            f"QPushButton:hover {{ color:{C_ACCENT}; border-color:{C_ACCENT}; }}")
+        self.btn_apk.clicked.connect(self._export_apk)
+        foot.addWidget(self.btn_apk)
         w = QWidget()
         w.setLayout(foot)
         return w
@@ -396,15 +473,22 @@ class DownloaderPage(QWidget):
         if not url:
             QMessageBox.information(self, "提示", "请先粘贴抖音分享链接")
             return
+        if getattr(self, "analyze_worker", None) and self.analyze_worker.isRunning():
+            return
+        # 一条龙：解析 + 下载 + 转写 + 画面理解 + 爆款报告
         self.btn_parse.setEnabled(False)
-        self.btn_parse.setText("⏳ 解析中…")
+        self.btn_parse.setText("⏳ 分析中…")
         self.card_result.setVisible(False)
-        self.progress.setVisible(False)
-        self._log("开始解析…", C_YELLOW)
-        self.parse_worker = ParseWorker(url)
-        self.parse_worker.ok.connect(self._on_parsed)
-        self.parse_worker.fail.connect(self._on_parse_fail)
-        self.parse_worker.start()
+        self.card_report.setVisible(False)
+        self.progress.setVisible(True)
+        self.progress.setValue(2)
+        self.txt_report.clear()
+        self._log("开始智能分析：下载视频 → 转写文案 → AI 看画面 → 爆款报告", C_CYAN)
+        self.analyze_worker = AnalyzeWorker(url)
+        self.analyze_worker.step.connect(self._on_analyze_step)
+        self.analyze_worker.ok.connect(self._on_analyze_ok)
+        self.analyze_worker.fail.connect(self._on_analyze_fail)
+        self.analyze_worker.start()
 
     def _on_parsed(self, info):
         self.btn_parse.setEnabled(True)
@@ -429,9 +513,72 @@ class DownloaderPage(QWidget):
 
     def _on_parse_fail(self, err):
         self.btn_parse.setEnabled(True)
-        self.btn_parse.setText("🚀 解析视频")
+        self.btn_parse.setText("🔍 解析并分析")
         self._log(f"解析失败：{err}", C_RED)
         QMessageBox.warning(self, "解析失败", f"无法解析该视频：\n{err}")
+
+    def _on_analyze_step(self, msg, pct):
+        self.progress.setValue(pct)
+        self._log(msg, C_SUB)
+
+    def _on_analyze_ok(self, res):
+        self.btn_parse.setEnabled(True)
+        self.btn_parse.setText("🔍 解析并分析")
+        self.progress.setValue(100)
+        self.progress.setVisible(False)
+        st = res.get("stats") or {}
+        self._info = {
+            "play": getattr(self.analyze_worker, "play_url", "") or "",
+            "desc": res.get("desc", ""), "author": res.get("author", ""),
+            "digg": st.get("digg", 0), "comment": st.get("comment", 0),
+            "share": st.get("share", 0),
+        }
+        self.lbl_desc.setText(f"📝 {str(res.get('desc', ''))[:60]}")
+        self.lbl_author.setText(f"👤 作者：{res.get('author', '')}")
+        self.lbl_stats.setText(
+            f"👍 点赞 {_fmt_count(st.get('digg', 0))}    💬 评论 {_fmt_count(st.get('comment', 0))}    "
+            f"🔄 分享 {_fmt_count(st.get('share', 0))}")
+        self.card_result.setVisible(True)
+        self.card_report.setVisible(True)
+        parts = []
+        if res.get("no_speech"):
+            parts.append("（未识别到口播语音：纯音乐/无人声视频，已用 AI 画面理解分析）")
+        elif res.get("transcript"):
+            parts.append("【📝 口播文案】\n" + res["transcript"])
+        parts.append("【📊 爆款分析报告】\n" + res.get("report", ""))
+        self.txt_report.setPlainText("\n\n".join(parts))
+        self._log("✅ 智能分析完成！可点击【下载无水印视频】保存原视频", C_GREEN)
+
+    def _on_analyze_fail(self, err):
+        self.btn_parse.setEnabled(True)
+        self.btn_parse.setText("🔍 解析并分析")
+        self.progress.setVisible(False)
+        self._log(f"分析失败：{err}", C_RED)
+        QMessageBox.warning(self, "分析失败", f"智能分析失败：\n{err}")
+
+    def _export_apk(self):
+        """把内置的手机版 APK 导出到用户选择的位置"""
+        base = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(base, "apk", "智鉴助手_v1.0.22.apk"),
+            os.path.join(base, "runtime", "智鉴助手_v1.0.22.apk"),
+        ]
+        src = next((p for p in candidates if os.path.exists(p)), None)
+        if not src:
+            QMessageBox.information(
+                self, "提示",
+                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.22.apk，或用手机直接安装。")
+            return
+        d, _ = QFileDialog.getSaveFileName(
+            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.22.apk"), "APK (*.apk)")
+        if d:
+            try:
+                shutil.copy(src, d)
+                self._log(f"✅ 手机版 APK 已导出：{d}（发送到手机安装即可）", C_GREEN)
+                QMessageBox.information(self, "导出成功",
+                                        f"APK 已保存到：\n{d}\n\n发送到手机安装即可使用「智鉴助手·手机版」")
+            except Exception as e:
+                self._log(f"导出 APK 失败：{e}", C_RED)
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择视频保存目录", self.save_dir)

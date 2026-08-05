@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-遵农商·抖音AI工作台 — 直播助手页面
+遵农商·智媒工作台 — 智播助手页面
 直播评论关键词监控 → 自动触发热键 → 直播伴侣切换场景/特效 + 知识库问答
 （整合自《与遵同行助农兴企AI直播助手 v1.5.9》，selenium 驱动方案与评论私信助手统一）
 """
@@ -879,7 +879,7 @@ class LiveMonitor(QThread):
 
 
 class LivePage(QWidget):
-    """直播助手：评论关键词 → 触发热键切换场景/特效 + 知识库问答"""
+    """智播助手：评论关键词 → 触发热键切换场景/特效 + 知识库问答"""
     go_home = pyqtSignal()
     check_update = pyqtSignal()
 
@@ -923,7 +923,7 @@ class LivePage(QWidget):
         btn_back.clicked.connect(self.go_home.emit)
         top.addWidget(btn_back)
         top.addSpacing(4)
-        top.addWidget(self._mk("🎥 直播助手", 17, C_TEXT, True))
+        top.addWidget(self._mk("🎥 智播助手", 17, C_TEXT, True))
         top.addSpacing(10)
         top.addWidget(self._mk("评论关键词 → 触发场景特效 · 知识库问答", 11, C_SUB))
         top.addStretch(1)

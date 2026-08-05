@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-遵农商·抖音AI工作台 — 启动门户页（质感版 v2）
+遵农商·智媒工作台 — 启动门户页（质感版 v2）
 渐变品牌标题 + 柔和光晕 + 星云粒子 + 玻璃拟态卡片（平滑过渡/上浮/辉光）
 设计语言：深空蓝底 + 蓝青科技色 + 暖金银行点缀，避免"AI 生成感"，追求品牌质感。
 """
@@ -311,7 +311,7 @@ class HomePage(QWidget):
         outer.addWidget(self.lb_eyebrow)
         outer.addSpacing(6)
         # 品牌渐变标题
-        self.lb_title = GradientTitle("遵农商 · 抖音AI工作台", 34)
+        self.lb_title = GradientTitle("遵农商 · 智媒工作台", 34)
         outer.addWidget(self.lb_title)
         outer.addSpacing(6)
         # 副标题
@@ -340,13 +340,13 @@ class HomePage(QWidget):
         cards = QHBoxLayout()
         cards.setSpacing(30)
         cards.addStretch(1)
-        c_dm = CardWidget("💬", "评论私信助手", "抖音评论 + 私信多账号自动回复\nAI 话术 · 多账号并行", QColor("#4d94ff"))
+        c_dm = CardWidget("💬", "智联助手", "评论 + 私信多账号自动回复\n话术模板 · 多账号并行", QColor("#4d94ff"))
         c_dm.clicked.connect(self.enter_dm.emit)
         cards.addWidget(c_dm)
-        c_live = CardWidget("🎥", "直播助手", "评论关键词触发场景特效\n知识库问答 · 自动播报", QColor("#22d3ee"))
+        c_live = CardWidget("🎥", "智播助手", "评论关键词触发场景特效\n知识库问答 · 自动播报", QColor("#22d3ee"))
         c_live.clicked.connect(self.enter_live.emit)
         cards.addWidget(c_live)
-        c_dl = CardWidget("📥", "无水印下载器", "粘贴抖音链接解析无水印原视频\n高清下载 · 即贴即下", QColor("#34d399"))
+        c_dl = CardWidget("🔍", "智鉴助手", "爆款视频智能拆解分析\n下载无水印 · AI 文案 · 爆款报告", QColor("#34d399"))
         c_dl.clicked.connect(self.enter_downloader.emit)
         cards.addWidget(c_dl)
         cards.addStretch(1)
