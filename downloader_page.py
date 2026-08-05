@@ -145,6 +145,7 @@ def parse_douyin(url):
         "digg": stats.get("digg_count") or 0,
         "comment": stats.get("comment_count") or 0,
         "share": stats.get("share_count") or 0,
+        "collect": stats.get("collect_count") or 0,
         "play": play,
         "cover": cover_list[0] if cover_list else None,
     }
@@ -243,19 +244,33 @@ class AnalyzeWorker(QThread):
             zns_analyze.extract_audio(video, wav)
             self.step.emit("语音转写文案…", 60)
             transcript, got = zns_analyze.baidu_asr(wav)
-            self.step.emit("AI 理解画面…", 75)
+            self.step.emit("AI 理解画面…", 72)
             vis = zns_analyze.glm_understand_frames(video, tmp)
-            self.step.emit("生成爆款分析报告…", 88)
+            self.step.emit("获取评论区与互动数据…", 82)
+            comments = []
+            try:
+                cj = zns_analyze.fetch_comments(self.url)
+                comments = cj.get("comments") or []
+                if cj.get("stats"):
+                    info = dict(info)
+                    info["digg"] = cj["stats"].get("likes", info.get("digg", 0))
+                    info["comment"] = cj["stats"].get("comments", info.get("comment", 0))
+                    info["share"] = cj["stats"].get("shares", info.get("share", 0))
+                    info["collect"] = cj["stats"].get("favorites", info.get("collect", 0))
+            except Exception:
+                comments = []
+            self.step.emit("生成爆款分析报告…", 90)
             meta = json.dumps({
                 "desc": info.get("desc", ""),
                 "stats": {"likes": info.get("digg", 0), "comments": info.get("comment", 0),
-                          "shares": info.get("share", 0)},
+                          "collects": info.get("collect", 0), "shares": info.get("share", 0)},
             }, ensure_ascii=False)
-            report = zns_analyze.deepseek_report(meta, transcript, "", vis)
+            report = zns_analyze.deepseek_report(meta, transcript, "", vis, comments)
             self.ok.emit({
                 "desc": info.get("desc", ""), "author": info.get("author", ""),
                 "stats": info, "transcript": transcript if got else "",
                 "no_speech": not got, "report": report, "video_path": video,
+                "comments": comments,
             })
         except Exception as e:
             self.fail.emit(str(e))
@@ -425,10 +440,14 @@ class DownloaderPage(QWidget):
         self.progress.setVisible(False)
         self.progress.setStyleSheet(
             f"QProgressBar {{ background:{C_BG}; border:1px solid {C_BORDER}; border-radius:6px;"
-            f" text-align:center; color:{C_TEXT}; font-size:12px; height:16px; }}"
+            f" text-align:center; color:{C_TEXT}; font-size:12px; height:18px; }}"
             f"QProgressBar::chunk {{ background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             f" stop:0 {C_ACCENT}, stop:1 {C_CYAN}); border-radius:5px; }}")
         body.addWidget(self.progress)
+        self.lbl_step = QLabel("")
+        self.lbl_step.setStyleSheet(
+            f"color:{C_CYAN}; font-size:13px; font-weight:bold; padding:2px 4px;")
+        body.addWidget(self.lbl_step)
 
         # ── 下载历史 ──
         lbl_his = QLabel("📂 下载历史")
@@ -519,6 +538,7 @@ class DownloaderPage(QWidget):
 
     def _on_analyze_step(self, msg, pct):
         self.progress.setValue(pct)
+        self.lbl_step.setText(f"⏳ {msg}　{pct}%")
         self._log(msg, C_SUB)
 
     def _on_analyze_ok(self, res):
@@ -526,6 +546,7 @@ class DownloaderPage(QWidget):
         self.btn_parse.setText("🔍 解析并分析")
         self.progress.setValue(100)
         self.progress.setVisible(False)
+        self.lbl_step.setText("✅ 分析完成！")
         st = res.get("stats") or {}
         self._info = {
             "play": getattr(self.analyze_worker, "play_url", "") or "",
@@ -540,12 +561,26 @@ class DownloaderPage(QWidget):
             f"🔄 分享 {_fmt_count(st.get('share', 0))}")
         self.card_result.setVisible(True)
         self.card_report.setVisible(True)
-        parts = []
+        st = res.get("stats") or {}
+        base = (f"【📊 视频基础数据】\n"
+                f"👍 点赞 {_fmt_count(st.get('digg', 0))}　💬 评论 {_fmt_count(st.get('comment', 0))}\n"
+                f"⭐ 收藏 {_fmt_count(st.get('collect', 0))}　🔄 转发 {_fmt_count(st.get('share', 0))}\n")
+        cmts = res.get("comments") or []
+        cmt_part = ""
+        if cmts:
+            cmt_lines = []
+            for c in cmts[:15]:
+                cmt_lines.append(f"　{c.get('user', '?')}：{c.get('text', '')}"
+                                 + (f"（赞{c.get('digg')}）" if c.get("digg") else ""))
+            cmt_part = "【💬 评论区热评】\n" + "\n".join(cmt_lines) + "\n"
+        parts = [base]
         if res.get("no_speech"):
             parts.append("（未识别到口播语音：纯音乐/无人声视频，已用 AI 画面理解分析）")
         elif res.get("transcript"):
-            parts.append("【📝 口播文案】\n" + res["transcript"])
-        parts.append("【📊 爆款分析报告】\n" + res.get("report", ""))
+            parts.append("【🎙 音频转写文案（本视频语音识别）】\n" + res["transcript"])
+        if cmt_part:
+            parts.append(cmt_part.rstrip())
+        parts.append("【📋 爆款分析报告】\n" + res.get("report", ""))
         self.txt_report.setPlainText("\n\n".join(parts))
         self._log("✅ 智能分析完成！可点击【下载无水印视频】保存原视频", C_GREEN)
         try:
@@ -558,6 +593,7 @@ class DownloaderPage(QWidget):
         self.btn_parse.setEnabled(True)
         self.btn_parse.setText("🔍 解析并分析")
         self.progress.setVisible(False)
+        self.lbl_step.setText(f"❌ 分析失败：{err[:60]}")
         self._log(f"分析失败：{err}", C_RED)
         QMessageBox.warning(self, "分析失败", f"智能分析失败：\n{err}")
 
@@ -565,17 +601,17 @@ class DownloaderPage(QWidget):
         """把内置的手机版 APK 导出到用户选择的位置"""
         base = os.path.dirname(os.path.abspath(__file__))
         candidates = [
-            os.path.join(base, "apk", "智鉴助手_v1.0.24.apk"),
-            os.path.join(base, "runtime", "智鉴助手_v1.0.24.apk"),
+            os.path.join(base, "apk", "智鉴助手_v1.0.25.apk"),
+            os.path.join(base, "runtime", "智鉴助手_v1.0.25.apk"),
         ]
         src = next((p for p in candidates if os.path.exists(p)), None)
         if not src:
             QMessageBox.information(
                 self, "提示",
-                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.24.apk，或用手机直接安装。")
+                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.25.apk，或用手机直接安装。")
             return
         d, _ = QFileDialog.getSaveFileName(
-            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.24.apk"), "APK (*.apk)")
+            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.25.apk"), "APK (*.apk)")
         if d:
             try:
                 shutil.copy(src, d)

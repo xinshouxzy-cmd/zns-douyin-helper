@@ -18,6 +18,7 @@ BD_AK = "0DudrZbzoHKhzxNegjbD6HOm"
 BD_SK = "seS6h56BpMFzKv5PwnPwh8BXT8BvtlpF"
 GLM_KEY = "c16a0e31273d4afcb9245588eea86bc8.mCmMiRdNeVT2qK5e"
 DS_KEY = "sk-d2eadfc598494ec188b042b14291489c"
+BACKEND_URL = "https://affair-rugs-bend-regulations.trycloudflare.com"  # 云端采集服务（评论/弹幕）
 
 
 def find_ffmpeg():
@@ -155,24 +156,46 @@ def glm_understand_frames(video, tmpdir, progress=None):
         return ""
 
 
-def deepseek_report(meta, transcript, frame_text, frame_visual, progress=None):
-    """DeepSeek 生成面向普通用户的爆款分析报告"""
+def deepseek_report(meta, transcript, frame_text, frame_visual, comments=None, progress=None):
+    """DeepSeek 生成面向普通用户的爆款分析报告（含基础数据 + 评论区分析）"""
     sys_prompt = (
         "你是一位短视频内容分析专家，善于读懂视频在讲什么。\n"
-        "根据提供的【视频描述】【画面文字识别】【画面理解】【口播文案】【互动数据】"
+        "根据提供的【视频描述】【画面文字识别】【画面理解】【口播文案】"
+        "【互动数据（点赞/评论/收藏/转发）】【评论区内容】"
         "，用中文写一份面向普通用户的《视频解读》：\n"
+        "0. 视频基础数据：点赞数、评论数、收藏数、转发数（有就写，没有不写）\n"
         "1. 这条视频在讲什么（一两句话概括）\n"
         "2. 画面与文案要点（结合画面理解和口播，按时间顺序讲清楚内容）\n"
-        "3. 为什么可能受欢迎（基于实际掌握的信息分析）\n"
-        "4. 可以借鉴的做法（给想拍视频的人的具体建议）\n"
+        "3. 评论区观众在聊什么（根据实际评论内容总结：观众在讨论什么、什么点引发共鸣或争论，"
+        "引用几条有代表性的评论）\n"
+        "4. 为什么可能受欢迎（结合互动数据与评论区观众反应分析）\n"
+        "5. 可以借鉴的做法（给想拍视频的人的具体建议）\n"
         "要求：只写已经掌握的信息，不要编造数据或细节；"
+        "评论区有内容就认真分析，没有就说明未获取到；"
         "不要出现'信息不足''缺失''建议补充'等开发术语。")
+    cmt_text = ""
+    if comments:
+        lines = []
+        for c in comments[:30]:
+            lines.append(f"{c.get('user', '?')}：{c.get('text', '')}"
+                         + (f"（赞{c.get('digg')}）" if c.get("digg") else ""))
+        cmt_text = "\n".join(lines)
     user = (f"视频信息：{meta}\n\n画面文字识别：{frame_text or '（无）'}\n\n"
-            f"画面理解：{frame_visual or '（无）'}\n\n完整文案（含时间点）：\n{transcript or '（无口播）'}")
+            f"画面理解：{frame_visual or '（无）'}\n\n完整文案（含时间点）：\n{transcript or '（无口播）'}"
+            f"\n\n评论区内容（前30条）：\n{cmt_text or '（未获取到评论区内容）'}")
     j = _http_json(
         "https://api.deepseek.com/chat/completions",
         {"Authorization": "Bearer " + DS_KEY, "Content-Type": "application/json"},
-        {"model": "deepseek-chat", "temperature": 0.7, "max_tokens": 3000,
+        {"model": "deepseek-chat", "temperature": 0.7, "max_tokens": 3500,
          "messages": [{"role": "system", "content": sys_prompt},
                       {"role": "user", "content": user}]}, timeout=300)
     return j["choices"][0]["message"]["content"].strip()
+
+
+def fetch_comments(share_url, timeout=90):
+    """从云端采集服务拉取评论区内容 + 完整互动数据（点赞/评论/收藏/转发）"""
+    q = urllib.parse.quote(share_url, safe="")
+    url = BACKEND_URL.rstrip("/") + "/api/analyze?url=" + q
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
