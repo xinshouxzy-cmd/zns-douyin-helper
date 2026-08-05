@@ -63,9 +63,30 @@ def parse_hotkey(text):
     return codes if len(codes) == len(parts) and codes else None
 
 
-def send_hotkey(codes, hold=0.06, gap=0.03):
+def _foreground_title():
+    """当前前台窗口标题（排查"热键发了但直播伴侣没反应"用）"""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        h = u.GetForegroundWindow()
+        if not h:
+            return ""
+        length = u.GetWindowTextLengthW(h)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        u.GetWindowTextW(h, buf, length + 1)
+        return buf.value
+    except Exception:
+        return ""
+
+
+def send_hotkey(codes, hold=0.06, gap=0.03, on_error=None):
     """Windows API 发送热键（SendInput 优先，失败自动回退 keybd_event）；
     按下/抬起之间保留真实按键时序（hold=按住时长），避免目标软件把瞬时事件当噪音丢弃。
+    小键盘/方向键等扩展键补 KEYEVENTF_EXTENDEDKEY 标志（否则部分软件区分不出小键盘数字）。
+    on_error: 发送受阻时回调原因字符串（用于日志提示权限/管理员问题）。
     非 Windows 返回 False（仅日志）"""
     if sys.platform != "win32":
         return False
@@ -73,6 +94,7 @@ def send_hotkey(codes, hold=0.06, gap=0.03):
     from ctypes import wintypes
     u = ctypes.windll.user32
     UP = 0x0002
+    KEYEVENTF_EXTENDEDKEY = 0x0001
     INPUT_KEYBOARD = 1
 
     class KEYBDINPUT(ctypes.Structure):
@@ -107,6 +129,13 @@ def send_hotkey(codes, hold=0.06, gap=0.03):
     mods = [c for c in codes if c in (0x11, 0x10, 0x12, 0x5B)]
     keys = [c for c in codes if c not in mods]
     scan = {c: u.MapVirtualKeyW(c, 0) for c in codes}
+
+    def needs_ext(vk):
+        """需要 KEYEVENTF_EXTENDEDKEY 的键：小键盘数字、方向键、编辑/翻页键"""
+        if 0x60 <= vk <= 0x69:
+            return True
+        return vk in (0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x21, 0x22, 0x24, 0x23)
+
     seq = []
     for c in mods:
         seq.append((c, scan[c], 0))
@@ -118,14 +147,23 @@ def send_hotkey(codes, hold=0.06, gap=0.03):
 
     # 方式1：SendInput（结构体带 union，大小必须与系统一致，否则 API 直接失败）
     ok = True
+    fail_reason = ""
     for vk, sc, fl in seq:
         inp = make_input(vk, sc, fl)
+        if needs_ext(vk):
+            inp.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
         if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
             ok = False
+            fail_reason = (
+                f"SendInput 返回错误码 {u.GetLastError()}。"
+                "最常见原因：直播伴侣以管理员身份运行、本软件未以管理员运行，"
+                "系统会拦截低权限进程的按键注入（请让两者都以管理员身份运行）。")
             break
         time.sleep(hold if fl == UP else gap)
     if ok:
         return True
+    if on_error:
+        on_error(f"{fail_reason}；已改用 keybd_event 再试一次")
 
     # 方式2：keybd_event 回退（部分软件只认这种注入方式）
     for c in mods:
@@ -240,6 +278,7 @@ class LiveMonitor(QThread):
         self._dedupe_win = 600.0  # 兜底通道的"昵称+内容"指纹去重窗口
         self._seen = {}           # 指纹 -> 最近处理时间
         self._prev_order = []     # 上一轮 DOM 顺序指纹（位置增量识别锚点）
+        self._total_new = 0       # 开始监控后真正识别到的新评论数（不含启动基线）
 
     def stop(self):
         self._run = False
@@ -509,7 +548,9 @@ class LiveMonitor(QThread):
         prev = self._prev_order or []
         self._prev_order = cur_fps[-80:]
         if not prev:
-            return list(cur_fps)
+            # 首轮只建立基线（当前评论区列表视为"已存在的旧评论"），不触发，
+            # 避免启动时把历史评论全部当成新评论、逐个触发特效
+            return []
         if len(cur_fps) < len(prev) or prev[-1] not in cur_fps:
             # 列表收缩/重排：本轮不确定，交给兜底通道（_seen 指纹窗口）
             return []
@@ -594,6 +635,29 @@ class LiveMonitor(QThread):
         self._dedupe_win = max(30.0, float(cfg.get("dedupe_window", 600)))
         self._seen = {}       # "昵称|内容"指纹 -> 最近处理时间（兜底通道去重）
         self._prev_order = [] # 上一轮按 DOM 顺序的评论指纹（位置增量识别锚点）
+        # ── 基线建立：清空登录等待期间观察器缓存的旧评论，并预扫描一次，
+        #    把当前评论区里已存在的评论标记为"已见"——
+        #    开始监控时不把历史评论当新评论触发；之后新发的评论照常触发 ──
+        try:
+            d.execute_script("window.__liveCommentBuf=[];")
+        except Exception:
+            pass
+        try:
+            for item in self._drain_js_comments(d) + self._sniff_all(d):
+                t = item.get("text", "") if isinstance(item, dict) else str(item)
+                if not self._looks_like_comment(t):
+                    continue
+                nick, content = self._split_comment(t)
+                fp = f"{nick}|{re.sub(r'\s+', '', content)[-40:]}"
+                self._seen[fp] = time.time()
+        except Exception:
+            pass
+        sel0 = self._pick_selector(d, sel_chain)
+        if sel0:
+            try:
+                self._prev_order = [fp for fp, _ in self._scan_ordered(d, sel0)][-80:]
+            except Exception:
+                pass
         last_beat = time.time()
         round_no = 0
         while self._run:
@@ -642,13 +706,24 @@ class LiveMonitor(QThread):
                     nick, content = self._split_comment(text)
                     match_text = content or text
                     fresh += 1
+                    self._total_new += 1
                     self.log.emit(f"[white]💬 {nick + '：' if nick else ''}{content[:60]}")
                     for item in scenes:
                         ks, hk, last_t = item
                         if any(kw in match_text for kw in ks):
                             if now - last_t >= cooldown:
                                 item[2] = now
+                                # 热键在监控线程里直接发送（不等 UI 线程排队），
+                                # 前台/后台/最小化都不受影响；发送失败会打印原因
                                 self.log.emit(f"[green]⚡ 命中场景「{ks[0]}」→ 发送热键 {hk}")
+                                if sys.platform == "win32":
+                                    codes2 = parse_hotkey(hk)
+                                    if codes2:
+                                        send_hotkey(
+                                            codes2,
+                                            on_error=lambda m: self.log.emit(f"[red]✗ {m}"))
+                                    else:
+                                        self.log.emit(f"[red]✗ 热键「{hk}」解析失败，请检查规则设置")
                                 self.scene_triggered.emit(hk, f"观众发送「{ks[0]}」")
                                 if switch_delay > 0:
                                     time.sleep(switch_delay)
@@ -667,7 +742,7 @@ class LiveMonitor(QThread):
                 if time.time() - last_beat >= 20:
                     last_beat = time.time()
                     sel_info = f"选择器 {self._active_sel}" if self._active_sel else "等待评论区出现"
-                    self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {len(self._seen)} 条（最近 20 秒 {fresh} 条）")
+                    self.log.emit(f"[yellow]监控中… {sel_info}，累计识别 {self._total_new} 条（最近 20 秒 {fresh} 条）")
             except Exception as e:
                 # 单轮异常不致命：记录后继续监控，避免一次抖动拖死整个监控
                 self.log.emit(f"[red]本轮扫描异常（已自动继续）：{e}")
@@ -896,7 +971,11 @@ class LivePage(QWidget):
             return
         self._append_log(f"[green]⚡ 测试热键「{hk}」已模拟按下…")
         if send_hotkey(codes):
-            self._append_log("[cyan]  已发送。若直播伴侣没切换场景，检查：①直播伴侣已打开且设置同款全局快捷键；②本软件与直播伴侣都以管理员身份运行；③按键组合与直播伴侣设置一致")
+            fg = _foreground_title()
+            self._append_log(
+                f"[cyan]  已发送。当前前台窗口：{fg or '未知'}。"
+                "若直播伴侣没切换场景，检查：①直播伴侣已打开且设置同款全局快捷键；"
+                "②本软件与直播伴侣都以管理员身份运行；③按键组合与直播伴侣设置一致")
         else:
             self._append_log("[yellow]  非 Windows 环境，测试热键已跳过")
 
@@ -1021,14 +1100,9 @@ class LivePage(QWidget):
         self.txt_log.append(f'<span style="color:{color}">{text}</span>')
 
     def _on_scene(self, hotkey, desc):
-        codes = parse_hotkey(hotkey)
-        if not codes:
-            self.txt_log.append(f'<span style="color:{C_RED}">✗ 热键「{hotkey}」无法解析，请检查格式（如 ctrl+1 / num9）</span>')
-            return
-        if send_hotkey(codes):
-            self.txt_log.append(f'<span style="color:{C_ACCENT}">🎬 已发送热键 {hotkey} → 直播伴侣切换场景（{desc}）</span>')
-        else:
-            self.txt_log.append(f'<span style="color:{C_YELLOW}">（非 Windows 环境，模拟热键已跳过）{desc}</span>')
+        # 热键已由监控线程直接发送，这里只补一条 UI 日志确认
+        self.txt_log.append(
+            f'<span style="color:{C_ACCENT}">🎬 已触发场景：{desc}（热键 {hotkey}）</span>')
 
     def _on_knowledge(self, kw, answer):
         box = QMessageBox(self)
