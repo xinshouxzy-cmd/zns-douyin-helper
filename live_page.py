@@ -5,7 +5,7 @@
 （整合自《与遵同行助农兴企AI直播助手 v1.5.9》，selenium 驱动方案与评论私信助手统一）
 """
 import os, sys, json, time, re, threading
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -147,10 +147,16 @@ def _activate_window(hwnd):
         return False
 
 
-def send_hotkey(codes, hold=0.06, gap=0.03, on_error=None):
-    """Windows API 发送热键（SendInput 优先，失败自动回退 keybd_event）；
-    按下/抬起之间保留真实按键时序（hold=按住时长），避免目标软件把瞬时事件当噪音丢弃。
-    小键盘/方向键等扩展键补 KEYEVENTF_EXTENDEDKEY 标志（否则部分软件区分不出小键盘数字）。
+def send_hotkey(codes, hold=0.25, gap=0.08, repeat=2, between=0.3, on_error=None):
+    """Windows API 发送热键（模拟人手按键，连发两遍提高命中率）。
+
+    为什么连发：直播伴侣这类软件的热键实现各不相同——
+    有的只认 SendInput 注入、有的只认 keybd_event、有的轮询间隔大容易漏掉快速按键。
+    因此第一遍用 SendInput（失败自动回退 keybd_event），第二遍用 keybd_event，
+    两遍间隔 0.3 秒。场景热键是"切到指定场景"，重复发送无副作用。
+
+    时序模拟人手：按住 Ctrl → 稍等 → 按下数字并保持 hold 秒 → 松开 → 松开 Ctrl。
+    每轮开始前先释放可能卡住的修饰键（防止上一轮失败导致 Ctrl 一直按着）。
     on_error: 发送受阻时回调原因字符串（用于日志提示权限/管理员问题）。
     非 Windows 返回 False（仅日志）"""
     if sys.platform != "win32":
@@ -201,47 +207,65 @@ def send_hotkey(codes, hold=0.06, gap=0.03, on_error=None):
             return True
         return vk in (0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x21, 0x22, 0x24, 0x23)
 
-    seq = []
-    for c in mods:
-        seq.append((c, scan[c], 0))
-    for c in keys:
-        seq.append((c, scan[c], 0))
-        seq.append((c, scan[c], UP))
-    for c in reversed(mods):
-        seq.append((c, scan[c], UP))
+    def release_mods():
+        """先释放可能卡住的修饰键，避免污染本轮"""
+        for c in mods:
+            u.keybd_event(c, 0, UP, 0)
+        time.sleep(0.05)
 
-    # 方式1：SendInput（结构体带 union，大小必须与系统一致，否则 API 直接失败）
-    ok = True
-    fail_reason = ""
-    for vk, sc, fl in seq:
-        inp = make_input(vk, sc, fl)
-        if needs_ext(vk):
-            inp.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
-        if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
-            ok = False
-            fail_reason = (
-                f"SendInput 返回错误码 {u.GetLastError()}。"
-                "最常见原因：直播伴侣以管理员身份运行、本软件未以管理员运行，"
-                "系统会拦截低权限进程的按键注入（请让两者都以管理员身份运行）。")
-            break
-        time.sleep(hold if fl == UP else gap)
-    if ok:
-        return True
-    if on_error:
-        on_error(f"{fail_reason}；已改用 keybd_event 再试一次")
+    def send_via_sendinput():
+        """SendInput 发送一轮（模拟人手时序），返回 (全部成功?, 失败原因)"""
+        for c in mods:
+            inp = make_input(c, scan[c], 0)
+            if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+                return False, f"SendInput 修饰键失败 错误码 {u.GetLastError()}"
+            time.sleep(gap)
+        time.sleep(0.05)
+        for c in keys:
+            inp = make_input(c, scan[c], 0)
+            if needs_ext(c):
+                inp.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
+            if u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+                return False, f"SendInput 主键失败 错误码 {u.GetLastError()}"
+            time.sleep(hold)
+            up = make_input(c, scan[c], UP)
+            if needs_ext(c):
+                up.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY
+            u.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
+            time.sleep(gap)
+        for c in reversed(mods):
+            up = make_input(c, scan[c], UP)
+            u.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
+            time.sleep(gap)
+        return True, ""
 
-    # 方式2：keybd_event 回退（部分软件只认这种注入方式）
-    for c in mods:
-        u.keybd_event(c, 0, 0, 0)
-        time.sleep(gap)
-    for c in keys:
-        u.keybd_event(c, 0, 0, 0)
-        time.sleep(hold)
-        u.keybd_event(c, 0, UP, 0)
-        time.sleep(gap)
-    for c in reversed(mods):
-        u.keybd_event(c, 0, UP, 0)
-        time.sleep(gap)
+    def send_via_keybd():
+        """keybd_event 发送一轮（部分软件只认这种注入方式）"""
+        for c in mods:
+            u.keybd_event(c, 0, 0, 0)
+            time.sleep(gap)
+        time.sleep(0.05)
+        for c in keys:
+            u.keybd_event(c, 0, 0, 0)
+            time.sleep(hold)
+            u.keybd_event(c, 0, UP, 0)
+            time.sleep(gap)
+        for c in reversed(mods):
+            u.keybd_event(c, 0, UP, 0)
+            time.sleep(gap)
+
+    for i in range(max(1, repeat)):
+        release_mods()
+        if i == 0:
+            ok, reason = send_via_sendinput()
+            if not ok:
+                if on_error:
+                    on_error(f"{reason}。最常见原因：直播伴侣以管理员身份运行、"
+                             "本软件未以管理员运行，系统拦截了按键注入（请让两者都以管理员身份运行）")
+                send_via_keybd()
+        else:
+            send_via_keybd()
+        time.sleep(between)
     return True
 
 
@@ -258,7 +282,7 @@ DEFAULT_CONFIG = {
     "poll_interval": 0.5, "cooldown": 2.0,
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
     "scene_hold_seconds": 7.0,
-    "key_hold_seconds": 0.15,       # 按键按住时长：太短部分软件轮询会漏掉，模拟人手按键
+    "key_hold_seconds": 0.25,       # 按键按住时长：模拟人手按键，太短部分软件轮询会漏掉
     "activate_before_send": True,   # 发送热键前临时把直播伴侣窗口带到前台（发完恢复）
     "dedupe_window": 600,
     "scenes": [
@@ -634,7 +658,7 @@ class LiveMonitor(QThread):
         cooldown = max(0.0, float(cfg.get("cooldown", 2.0)))
         switch_delay = max(0.0, float(cfg.get("scene_switch_delay", 0.3)))
         hold_seconds = max(0.0, float(cfg.get("scene_hold_seconds", 7.0)))
-        key_hold = max(0.05, float(cfg.get("key_hold_seconds", 0.15)))
+        key_hold = max(0.05, float(cfg.get("key_hold_seconds", 0.25)))
         activate_switch = bool(cfg.get("activate_before_send", True))
         scenes = []
         for s in cfg.get("scenes", []):
@@ -855,6 +879,12 @@ class LivePage(QWidget):
         self._build_ui()
         self._load_to_ui()
 
+    def eventFilter(self, obj, event):
+        """屏蔽下拉框的滚轮事件：鼠标悬停时滚动不会误改选项，只能点开选择"""
+        if isinstance(obj, QComboBox) and event.type() == QEvent.Wheel:
+            return True
+        return super().eventFilter(obj, event)
+
     def _mk(self, text, size=12, color=C_TEXT, bold=False):
         lb = QLabel(text)
         ft = QFont()
@@ -913,6 +943,7 @@ class LivePage(QWidget):
         for label, val in NUM_KEY_OPTIONS:
             self.cmb_main_key.addItem(label, val)
         self.cmb_main_key.setStyleSheet(STYLE_COMBO)
+        self.cmb_main_key.installEventFilter(self)
         gl.addWidget(self.cmb_main_key, 1, 1)
         gl.addWidget(self._mk("场景保持(秒)", 11, C_SUB), 1, 2)
         self.sp_hold = QDoubleSpinBox(); self.sp_hold.setRange(0.0, 60); self.sp_hold.setSingleStep(0.5)
@@ -1019,6 +1050,7 @@ class LivePage(QWidget):
             if i >= 0:
                 cmb_m.setCurrentIndex(i)
         cmb_m.setStyleSheet(STYLE_COMBO)
+        cmb_m.installEventFilter(self)
         self.tbl_scene.setCellWidget(r, 1, cmb_m)
         cmb_k = QComboBox()
         for label, val in KEY_OPTIONS:
@@ -1028,6 +1060,7 @@ class LivePage(QWidget):
             if i >= 0:
                 cmb_k.setCurrentIndex(i)
         cmb_k.setStyleSheet(STYLE_COMBO)
+        cmb_k.installEventFilter(self)
         self.tbl_scene.setCellWidget(r, 2, cmb_k)
         bt = QPushButton("⚡ 测试")
         bt.setStyleSheet(f"QPushButton {{ background: #1a2b4d; color: {C_ACCENT}; border: 1px solid #2b4a80; border-radius: 5px; padding: 3px 10px; }}")
@@ -1060,8 +1093,8 @@ class LivePage(QWidget):
         if not codes:
             self._append_log(f"[red]✗ 热键「{hk}」无法解析")
             return
-        self._append_log(f"[green]⚡ 测试热键「{hk}」已模拟按下…")
-        if send_hotkey(codes):
+        self._append_log(f"[green]⚡ 测试热键「{hk}」已模拟按下（连发 3 遍，请观察直播伴侣）…")
+        if send_hotkey(codes, repeat=3):
             fg = _foreground_title()
             self._append_log(
                 f"[cyan]  已发送。当前前台窗口：{fg or '未知'}。"
@@ -1082,7 +1115,7 @@ class LivePage(QWidget):
             self.cmb_main_key.setCurrentIndex(i)
         self.sp_delay.setValue(float(self.cfg.get("scene_switch_delay", 0.3)))
         self.sp_hold.setValue(float(self.cfg.get("scene_hold_seconds", 7.0)))
-        self.sp_key_hold.setValue(float(self.cfg.get("key_hold_seconds", 0.15)))
+        self.sp_key_hold.setValue(float(self.cfg.get("key_hold_seconds", 0.25)))
         self.chk_activate.setChecked(bool(self.cfg.get("activate_before_send", True)))
         for s in self.cfg.get("scenes", []):
             hk = str(s.get("hotkey", "")).strip()
