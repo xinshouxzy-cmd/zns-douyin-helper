@@ -10,7 +10,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QDoubleSpinBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QTextEdit, QComboBox,
+    QHeaderView, QMessageBox, QTextEdit, QComboBox, QCheckBox,
 )
 from selenium.webdriver.common.by import By
 from worker import BASE_DIR, find_chromedriver, get_bundled_chrome
@@ -283,6 +283,7 @@ DEFAULT_CONFIG = {
     "default_scene_key": "num9", "scene_switch_delay": 0.3,
     "scene_hold_seconds": 7.0,
     "key_hold_seconds": 0.25,       # 按键按住时长：模拟人手按键，太短部分软件轮询会漏掉
+    "foreground_trigger": True,     # 触发时自动把直播伴侣置顶到前台（特效完恢复原窗口）
     "dedupe_window": 600,
     "scenes": [
         {"keywords": "嘉年华", "hotkey": "ctrl+1"},
@@ -369,6 +370,7 @@ class LiveMonitor(QThread):
         self._seen = {}           # 指纹 -> 最近处理时间
         self._prev_order = []     # 上一轮 DOM 顺序指纹（位置增量识别锚点）
         self._total_new = 0       # 开始监控后真正识别到的新评论数（不含启动基线）
+        self._fg_before_trigger = None  # 触发前的前台窗口（特效完恢复用）
 
     def stop(self):
         self._run = False
@@ -562,9 +564,17 @@ class LiveMonitor(QThread):
                 try:
                     send_hotkey(codes, hold=hold, repeat=3)
                     self.log.emit(f"[cyan]↩ 场景已保持 {delay:g} 秒，已自动返回主镜头")
+                    self._restore_foreground()
                 except Exception as e:
                     self.log.emit(f"[red]自动返回主镜头失败：{e}")
         threading.Thread(target=_do, daemon=True).start()
+
+    def _restore_foreground(self):
+        """恢复触发前的前台窗口（特效结束回到主镜头后调用）"""
+        hwnd = self._fg_before_trigger
+        self._fg_before_trigger = None
+        if hwnd:
+            _activate_window(hwnd)
 
     @staticmethod
     def _split_comment(text):
@@ -658,6 +668,7 @@ class LiveMonitor(QThread):
         switch_delay = max(0.0, float(cfg.get("scene_switch_delay", 0.3)))
         hold_seconds = max(0.0, float(cfg.get("scene_hold_seconds", 7.0)))
         key_hold = max(0.05, float(cfg.get("key_hold_seconds", 0.25)))
+        fg_switch = bool(cfg.get("foreground_trigger", True))  # 触发时把直播伴侣置顶（特效完恢复）
         scenes = []
         for s in cfg.get("scenes", []):
             ks = [k.strip() for k in re.split(r"[,，]", str(s.get("keywords", ""))) if k.strip()]
@@ -813,6 +824,14 @@ class LiveMonitor(QThread):
                                 if sys.platform == "win32":
                                     codes2 = parse_hotkey(hk)
                                     if codes2:
+                                        # 直播伴侣需在前台才响应热键：触发前把它置顶，
+                                        # 记录原前台窗口，特效结束回主镜头后自动恢复
+                                        if fg_switch:
+                                            self._fg_before_trigger = _get_foreground_hwnd()
+                                            win = _find_window_by_title(("直播伴侣", "抖音直播"))
+                                            if win:
+                                                _activate_window(win)
+                                                time.sleep(0.15)
                                         send_hotkey(
                                             codes2,
                                             hold=max(key_hold, 0.25),
@@ -829,6 +848,11 @@ class LiveMonitor(QThread):
                                                                hold=max(key_hold, 0.25))
                                     self.log.emit(
                                         f"[cyan]⏱ 场景保持计时重置：{hold_seconds:g} 秒后自动返回主镜头（以最近一次触发为准）")
+                                else:
+                                    # 未配置自动回主镜头：5 秒后恢复原前台窗口（兜底，避免一直占前台）
+                                    threading.Thread(
+                                        target=lambda: (time.sleep(5), self._restore_foreground()),
+                                        daemon=True).start()
                             break
                     for ks, ans in knowledge:
                         if any(kw in match_text for kw in ks):
@@ -942,7 +966,10 @@ class LivePage(QWidget):
         gl.addWidget(self._mk("按键按住(秒)", 11, C_SUB), 2, 2)
         self.sp_key_hold = QDoubleSpinBox(); self.sp_key_hold.setRange(0.05, 0.6); self.sp_key_hold.setSingleStep(0.05)
         gl.addWidget(self.sp_key_hold, 2, 3)
-        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 3, 0, 1, 4)
+        self.chk_foreground = QCheckBox("触发时自动置顶直播伴侣窗口（特效结束回主镜头后自动恢复原窗口）")
+        self.chk_foreground.setStyleSheet(f"color: {C_SUB}; background: transparent;")
+        gl.addWidget(self.chk_foreground, 3, 0, 1, 4)
+        gl.addWidget(self._mk("热键用下拉选择不会输错：数字 7 = 横排数字（如 ctrl+7）；小键盘 9 = num9。每条规则一个关键词，想加关键词就加一行。", 10, C_SUB), 4, 0, 1, 4)
         for w in (self.ed_url, self.ed_sel, self.sp_interval, self.sp_cooldown, self.sp_delay, self.sp_hold, self.sp_key_hold):
             w.setStyleSheet(STYLE_EDIT)
         outer.addWidget(card)
@@ -1101,6 +1128,7 @@ class LivePage(QWidget):
         self.sp_delay.setValue(float(self.cfg.get("scene_switch_delay", 0.3)))
         self.sp_hold.setValue(float(self.cfg.get("scene_hold_seconds", 7.0)))
         self.sp_key_hold.setValue(float(self.cfg.get("key_hold_seconds", 0.25)))
+        self.chk_foreground.setChecked(bool(self.cfg.get("foreground_trigger", True)))
         for s in self.cfg.get("scenes", []):
             hk = str(s.get("hotkey", "")).strip()
             parts = [p.strip() for p in hk.split("+")] if hk else []
@@ -1141,6 +1169,7 @@ class LivePage(QWidget):
             "scene_switch_delay": self.sp_delay.value(),
             "scene_hold_seconds": self.sp_hold.value(),
             "key_hold_seconds": self.sp_key_hold.value(),
+            "foreground_trigger": self.chk_foreground.isChecked(),
             "scenes": scenes,
             "knowledge": knowledge,
         }
