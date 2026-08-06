@@ -80,7 +80,6 @@ jobs:
             --add-data "chrome_profiles;chrome_profiles" `
             --add-data "comment_data;comment_data" `
             --add-data "runtime;runtime" `
-            --add-data "apk;apk" `
             --add-data "assets;assets" `
             --add-binary "chromedriver.exe;." `
             --collect-all PyQt5 `

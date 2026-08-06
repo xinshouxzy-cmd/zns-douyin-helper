@@ -5,14 +5,14 @@
 （语音转写文案 / GLM 画面理解 / DeepSeek 爆款分析报告 + 手机版 APK 导出）
 """
 
-import os, re, json, time, shutil, tempfile, html as _html
+import os, re, json, time, shutil, tempfile, html as _html, urllib.parse
 import requests
 import zns_analyze
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
-    QFrame, QProgressBar, QTextEdit, QFileDialog, QMessageBox,
+    QFrame, QProgressBar, QTextEdit, QFileDialog, QMessageBox, QDialog,
 )
 
 # ── 深色科技风配色（与直播助手/评论私信统一） ──────────
@@ -601,28 +601,62 @@ class DownloaderPage(QWidget):
         QMessageBox.warning(self, "分析失败", f"智能分析失败：\n{err}")
 
     def _export_apk(self):
-        """把内置的手机版 APK 导出到用户选择的位置"""
-        base = os.path.dirname(os.path.abspath(__file__))
-        candidates = [
-            os.path.join(base, "apk", "智鉴助手_v1.0.34.apk"),
-            os.path.join(base, "runtime", "智鉴助手_v1.0.34.apk"),
-        ]
-        src = next((p for p in candidates if os.path.exists(p)), None)
-        if not src:
-            QMessageBox.information(
-                self, "提示",
-                "手机版 APK 未随本工具携带。\n请向开发者索取 智鉴助手_v1.0.34.apk，或用手机直接安装。")
-            return
-        d, _ = QFileDialog.getSaveFileName(
-            self, "保存手机版 APK", os.path.join(self.save_dir, "智鉴助手_v1.0.34.apk"), "APK (*.apk)")
-        if d:
+        """弹出二维码：微信/浏览器扫码即可下载手机版 APK（APK 托管在采集服务）"""
+        try:
+            # APK 直链：优先用 config.json 的 backend_url，否则用内置地址
+            backend = "https://affair-rugs-bend-regulations.trycloudflare.com"
+            cfg_path = os.path.join(BASE_DIR, "config.json")
+            if os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    if cfg.get("backend_url"):
+                        backend = str(cfg["backend_url"]).strip()
+                except Exception:
+                    pass
+            apk_url = backend.rstrip("/") + "/apk/zhijian.apk"
+            # 在线生成二维码图片（软件联网，微信/浏览器可扫）
+            qr_api = ("https://api.qrserver.com/v1/create-qr-code/"
+                      "?data=" + urllib.parse.quote(apk_url, safe="") + "&size=380x380&margin=8")
+            pic = None
             try:
-                shutil.copy(src, d)
-                self._log(f"✅ 手机版 APK 已导出：{d}（发送到手机安装即可）", C_GREEN)
-                QMessageBox.information(self, "导出成功",
-                                        f"APK 已保存到：\n{d}\n\n发送到手机安装即可使用「智鉴助手·手机版」")
-            except Exception as e:
-                self._log(f"导出 APK 失败：{e}", C_RED)
+                r = requests.get(qr_api, timeout=20)
+                if r.status_code == 200 and r.content:
+                    pic = QPixmap()
+                    pic.loadFromData(r.content)
+            except Exception:
+                pic = None
+            dlg = QDialog(self)
+            dlg.setWindowTitle("📱 下载手机版（扫码）")
+            dlg.setStyleSheet(f"QDialog {{ background:{C_CARD}; }} QLabel {{ color:{C_TEXT}; }}")
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(24, 20, 24, 20)
+            if pic and not pic.isNull():
+                lb = QLabel()
+                lb.setPixmap(pic.scaled(380, 380, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                lb.setAlignment(Qt.AlignCenter)
+                lay.addWidget(lb)
+                tip = "用微信或手机浏览器扫一扫，即可下载安装「智鉴助手·手机版」"
+            else:
+                tip = "二维码加载失败，请直接复制下面的链接到手机浏览器打开下载："
+            lay.addWidget(QLabel(tip))
+            url_lb = QLabel(apk_url)
+            url_lb.setWordWrap(True)
+            url_lb.setStyleSheet(
+                f"color:{C_CYAN}; font-size:12px; border:1px solid {C_BORDER};"
+                f" border-radius:6px; padding:8px;")
+            lay.addWidget(url_lb)
+            btn_ok = QPushButton("关 闭")
+            btn_ok.setStyleSheet(
+                f"QPushButton {{ background:{C_ACCENT}; color:white; border:none;"
+                f" border-radius:8px; padding:9px 30px; }}")
+            btn_ok.clicked.connect(dlg.accept)
+            lay.addWidget(btn_ok, 0, Qt.AlignCenter)
+            dlg.exec_()
+            self._log(f"📱 已展示手机版下载二维码：{apk_url}", C_GREEN)
+        except Exception as e:
+            self._log(f"打开二维码失败：{e}", C_RED)
+            QMessageBox.information(self, "提示", f"手机版下载地址：\n{apk_url}")
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择视频保存目录", self.save_dir)
