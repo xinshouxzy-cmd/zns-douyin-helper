@@ -353,11 +353,11 @@ class HomePage(QWidget):
         cards.setSpacing(30)
         cards.addStretch(1)
         c_dm = CardWidget("💬", "智联助手", "评论 + 私信多账号自动回复\n话术模板 · 多账号并行",
-                          QColor("#2aa868"), icon_pix=self._icon("icon_zhlian.png"))
+                          QColor("#4d94ff"), icon_pix=self._icon("icon_zhlian.png"))
         c_dm.clicked.connect(self.enter_dm.emit)
         cards.addWidget(c_dm)
         c_live = CardWidget("🎥", "智播助手", "评论关键词触发场景特效\n知识库问答 · 自动播报",
-                            QColor("#22c55e"), icon_pix=self._icon("icon_zhibo.png"))
+                            QColor("#22d3ee"), icon_pix=self._icon("icon_zhibo.png"))
         c_live.clicked.connect(self.enter_live.emit)
         cards.addWidget(c_live)
         c_dl = CardWidget("🔍", "智鉴助手", "爆款视频智能拆解分析\n下载无水印 · AI 文案 · 爆款报告",
