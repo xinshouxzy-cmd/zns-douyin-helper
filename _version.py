@@ -1,4 +1,6 @@
-VERSION = "v2.2.0"
+VERSION = "v2.2.1"
+#      (39) v2.2.1 同步新隧道地址（电脑重启后免费隧道地址变化）：内置采集服务地址更新为
+#           framework-keys-varying-neutral.trycloudflare.com（zns_analyze/updater/downloader 三处一致）
 #      (38) v2.2.0 最终交付版：新增启动画面动画（品牌 logo 缩放发光 + 标题渐显 +
 #           进度光带 + 淡出进入主界面，约 2.2 秒）；版本号定为最终交付版
 #      (37) v2.1.4 界面配色回归深空蓝科技风：启动页三卡片强调色还原为蓝/青/青（#4d94ff/#22d3ee/#34d399），
