@@ -18,7 +18,7 @@ BD_AK = "0DudrZbzoHKhzxNegjbD6HOm"
 BD_SK = "seS6h56BpMFzKv5PwnPwh8BXT8BvtlpF"
 GLM_KEY = "c16a0e31273d4afcb9245588eea86bc8.mCmMiRdNeVT2qK5e"
 DS_KEY = "sk-d2eadfc598494ec188b042b14291489c"
-BACKEND_URL = "https://framework-keys-varying-neutral.trycloudflare.com"  # 云端采集服务（评论/弹幕）
+BACKEND_URL = "https://api.zynsyh.online"  # 云端采集服务（评论/弹幕）
 
 
 def find_ffmpeg():

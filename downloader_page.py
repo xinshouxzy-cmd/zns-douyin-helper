@@ -604,7 +604,7 @@ class DownloaderPage(QWidget):
         """弹出二维码：微信/浏览器扫码即可下载手机版 APK（APK 托管在采集服务）"""
         try:
             # APK 直链：优先用 config.json 的 backend_url，否则用内置地址
-            backend = "https://framework-keys-varying-neutral.trycloudflare.com"
+            backend = "https://api.zynsyh.online"
             cfg_path = os.path.join(BASE_DIR, "config.json")
             if os.path.exists(cfg_path):
                 try:

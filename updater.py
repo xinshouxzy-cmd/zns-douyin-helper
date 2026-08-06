@@ -18,7 +18,7 @@ import urllib.error
 # ── 云端接口地址（HTTP 触发域名） ─────────────────────────
 API_BASE = "https://yileyuanyunfuwu-d1f5mb6o341623f5-1462248439.ap-shanghai.app.tcloudbase.com"
 # 统一管理后台（采集服务隧道地址；可在 config.json 的 backend_url 字段覆盖）
-BACKEND_URL = "https://framework-keys-varying-neutral.trycloudflare.com"
+BACKEND_URL = "https://api.zynsyh.online"
 TIMEOUT = 15
 
 

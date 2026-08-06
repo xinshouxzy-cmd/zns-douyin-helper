@@ -1,4 +1,5 @@
-VERSION = "v2.2.1"
+VERSION = "v2.2.2"
+#      (40) v2.2.2 固定域名上线：内置采集服务地址改为 https://api.zynsyh.online（永久地址，重启不再变）
 #      (39) v2.2.1 同步新隧道地址（电脑重启后免费隧道地址变化）：内置采集服务地址更新为
 #           framework-keys-varying-neutral.trycloudflare.com（zns_analyze/updater/downloader 三处一致）
 #      (38) v2.2.0 最终交付版：新增启动画面动画（品牌 logo 缩放发光 + 标题渐显 +
