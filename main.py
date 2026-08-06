@@ -25,6 +25,7 @@ import updater
 from home_page import HomePage
 from live_page import LivePage
 from downloader_page import DownloaderPage
+from splash import SplashScreen
 
 try:
     from _version import VERSION
@@ -1296,7 +1297,9 @@ def main():
     if sys.platform == "darwin":
         app.setStyle("Fusion")
     win = MainWindow()
-    win.show()
+    splash = SplashScreen(VERSION)
+    splash.finished.connect(win.show)
+    splash.show()
     sys.exit(app.exec_())
 
 
